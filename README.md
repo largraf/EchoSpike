@@ -1,1 +1,0 @@
-# SNN_CLAPP
