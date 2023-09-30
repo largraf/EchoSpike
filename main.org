@@ -1,0 +1,40 @@
+#+TITLE: Org main for CLAPP SNN
+#+AUTHOR: Lars Graf
+* Imports and parameters
+#+begin_src python :session
+import matplotlib.pyplot as plt
+from utils import load_NMNIST, train, test
+from model import CLAPP_SNN
+
+device = 'cpu'
+epochs = 1
+batch_size = 1
+#+end_src
+
+#+RESULTS:
+
+* Load Data Set and show example
+#+begin_src python :session :results graphics file value :file boxplot.svg :output-dir images/
+train_loader, test_loader = load_NMNIST(20, batch_size=batch_size)
+# plot example
+plt.figure()
+plt.plot([1,2,3])
+plt.show()
+plt.gcf()
+#+end_src
+
+#+RESULTS:
+[[file:boxplot.svg]]
+
+* Training
+#+begin_src python
+
+SNN = CLAPP_SNN(2312, 512, 16, 20).to(device)
+acc_hist, loss_hist = train(SNN, train_loader, epochs, device)
+plt.plot(acc_hist)
+plt.plot(loss_hist)
+plt.show()
+correct = test(SNN, test_loader, device)
+print(correct)
+print('Accuracy:', sum(correct)/10000)
+#+end_src
