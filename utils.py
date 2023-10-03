@@ -30,43 +30,47 @@ def train(net, trainloader, epochs, device):
     loss_fn = SF.mse_count_loss(correct_rate=0.8, incorrect_rate=0.2)
     # training loop
     prev_target = -1
+    optimizer = torch.optim.Adam(net.parameters(), lr=2e-4)
+    net.train()
+    mem_history = []
+    target_list = []
     for epoch in range(epochs):
         for i, (data, targets) in tqdm(enumerate(iter(trainloader))):
+            optimizer.zero_grad()
             data = data.squeeze(0).float().to(device)
+            target_list.append(targets)
             targets = targets.to(device)
 
-            net.train()
             bf = 1 if targets == prev_target else -1
             prev_target = targets
-            spk_rec, _ = net(data, bf)
-            loss_val = loss_fn(spk_rec, targets)
-            if net.rule == 'backprop':
-                # Gradient calculation + weight update
-                optimizer = torch.optim.Adam(net.parameters(), lr=2e-2, betas=(0.9, 0.999))
-                optimizer.zero_grad()
-                loss_val.backward()
-                optimizer.step()
+            logit_list, mem_his = net(data, targets, bf)
+            mem_history.append(mem_his)
+            loss_val = loss_fn(torch.tensor(logit_list), targets)
+            optimizer.step()
 
             # Store loss history for future plotting
             loss_hist.append(loss_val.item()) 
 
-            acc = SF.accuracy_rate(spk_rec.unsqueeze(0), targets)
-            acc_hist.append(acc)
             if i % 500 == 0:
                 print(f"Epoch {epoch}, Iteration {i} \nTrain Loss: {loss_val.item():.2f}")
-                print(f"Accuracy: {acc * 100:.2f}%\n")
-    return acc_hist, loss_hist
+                if i == 2000:
+                    break
+    return loss_hist, torch.cat(mem_history, 0), target_list
 
 def test(net, testloader, device):
     correct = 10*[0]
     net.eval()
+    mem_history = []
+    target_list = []
     with torch.no_grad():
         for i, (data, targets) in tqdm(enumerate(iter(testloader))):
-            data = data.float().to(device)
+            data = data.squeeze(0).float().to(device)
             targets = targets.to(device)
-            spk_rec, _ = net(data)
-            pred = spk_rec.sum(axis=0).argmax(axis=-1)
+            logit_list, mem_his = net(data, targets, 1)
+            mem_history.append(mem_his)
+            target_list.append(targets)
+            pred = torch.tensor(logit_list).sum(axis=0).argmax(axis=-1)
             bool_idx = pred == targets
             for val in targets[bool_idx]:
                 correct[val] += 1
-    return correct
+    return correct, mem_history, target_list
