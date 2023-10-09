@@ -4,8 +4,20 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import snntorch.functional as SF
+import snntorch as snn
 
 def load_NMNIST(n_time_bins, batch_size=1):
+    """
+    Load the Neuromorphic-MNIST dataset.
+
+    Parameters:
+        n_time_bins (int): The number of time bins per digit.
+        batch_size (int, optional): The batch size. Defaults to 1.
+
+    Returns:
+        train_loader (DataLoader): The data loader for the training set.
+        test_loader (DataLoader): The data loader for the test set.
+    """
     # load NMNIST dataset
     sensor_size = tonic.datasets.NMNIST.sensor_size
     print(sensor_size)
@@ -23,54 +35,115 @@ def load_NMNIST(n_time_bins, batch_size=1):
     test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
     return train_loader, test_loader
 
+def load_PMNIST(n_time_steps, batch_size=1, scale=1):
+    import torchvision
+    import torchvision.transforms as transforms
+    transform = transforms.Compose([transforms.ToTensor(),
+                                    lambda x: snn.spikegen.rate(x*scale, n_time_steps).view(n_time_steps, -1)])
+    trainset = torchvision.datasets.MNIST(root='./data', 
+                                            train=True, 
+                                       transform=transform,  
+                                           download=True)
+    testset = torchvision.datasets.MNIST(root='./data', 
+                                            train=False, 
+                                       transform=transform,  
+                                           download=True)
+    
+    train_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, 
+                                            shuffle=True)
+    test_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, 
+                                            shuffle=False) 
+    return train_loader, test_loader
+
 
 def train(net, trainloader, epochs, device):
-    acc_hist = []
+    """
+    Trains a SNN.
+
+    Args:
+        net (torch.nn.Module): The neural network model to be trained.
+        trainloader (torch.utils.data.DataLoader): The data loader for the training dataset.
+        epochs (int): The number of epochs for training.
+        device (torch.device): The device to use for training the model.
+
+    Returns:
+        tuple: A tuple containing the following:
+            - loss_hist (list): A list of the loss values during training.
+            - mem_history (torch.Tensor): A tensor containing the LIF memory history.
+            - target_list (list): A list of the target values.
+    """
     loss_hist = []
-    loss_fn = SF.mse_count_loss(correct_rate=0.8, incorrect_rate=0.2)
+    clapp_loss_hist = []
+    loss_fn = SF.ce_count_loss()
     # training loop
     prev_target = -1
-    optimizer = torch.optim.Adam(net.parameters(), lr=2e-4)
+    optimizer_clapp = torch.optim.Adam(net.clapp.parameters(), lr=1e-5)
+    optimizer_out = torch.optim.AdamW(net.out_proj.parameters(), lr=1e-3)
     net.train()
-    mem_history = []
     target_list = []
+    bf = 0
     for epoch in range(epochs):
         for i, (data, targets) in tqdm(enumerate(iter(trainloader))):
-            optimizer.zero_grad()
+            net.reset()
             data = data.squeeze(0).float().to(device)
-            target_list.append(targets)
-            targets = targets.to(device)
-
-            bf = 1 if targets == prev_target else -1
+            if targets == prev_target:
+                continue
             prev_target = targets
-            logit_list, mem_his = net(data, targets, bf)
-            mem_history.append(mem_his)
-            loss_val = loss_fn(torch.tensor(logit_list), targets)
-            optimizer.step()
+            logits_per_step = []
+            for step in range(data.shape[0]):
+                optimizer_clapp.zero_grad()
+                optimizer_out.zero_grad()
+                target_list.append(targets)
+                targets = targets.to(device)
 
+                logit_list, _, clapp_loss = net(data[step].flatten(), targets, torch.tensor(bf, device=device))
+                logits_per_step.append(logit_list)
+                if bf != 0:
+                    clapp_loss_hist.append(clapp_loss)
+                    optimizer_clapp.step()
+                optimizer_out.step()
+
+                if step == data.shape[0] - 1:
+                    bf = -1
+                elif step == data.shape[0] - 2:
+                    bf = 1
+                else:
+                    bf = 0
+                # coin_flip = torch.rand(1) > 0.5
+                # if coin_flip:
+                #     break
+                # else:
+                #     bf = 1
+            loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), targets)
             # Store loss history for future plotting
             loss_hist.append(loss_val.item()) 
 
-            if i % 500 == 0:
-                print(f"Epoch {epoch}, Iteration {i} \nTrain Loss: {loss_val.item():.2f}")
-                if i == 2000:
-                    break
-    return loss_hist, torch.cat(mem_history, 0), target_list
+            if i % 1000 == 0 and i > 1:
+                print(f"Epoch {epoch}, Iteration {i} \nTrain Loss: {sum(loss_hist[-1000:])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-2000:]).sum(axis=0)/2000}")
+            if i == 1e3:
+                break
+    return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
 def test(net, testloader, device):
-    correct = 10*[0]
+    loss_per_class = 10*[0]
     net.eval()
     mem_history = []
     target_list = []
+    loss_list = []
     with torch.no_grad():
         for i, (data, targets) in tqdm(enumerate(iter(testloader))):
+            net.reset()
             data = data.squeeze(0).float().to(device)
             targets = targets.to(device)
-            logit_list, mem_his = net(data, targets, 1)
-            mem_history.append(mem_his)
-            target_list.append(targets)
-            pred = torch.tensor(logit_list).sum(axis=0).argmax(axis=-1)
-            bool_idx = pred == targets
-            for val in targets[bool_idx]:
-                correct[val] += 1
-    return correct, mem_history, target_list
+            logit_list = []
+            for step in range(data.shape[0]):
+                logits, mem_his, _ = net(data[step].flatten(), targets, 0)
+                logit_list.append(logits)
+                mem_history.append(mem_his)
+                # clapp_loss_hist.append(clapp_loss)
+                target_list.append(targets)
+            pred = torch.stack(logit_list).sum(axis=0)
+            loss = torch.nn.functional.cross_entropy(pred, targets.squeeze())
+            loss_per_class[targets] += loss
+            loss_list.append(loss)
+    return torch.stack(loss_list), loss_per_class, mem_history, target_list
