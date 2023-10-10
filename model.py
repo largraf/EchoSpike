@@ -3,7 +3,6 @@ import torch.nn as nn
 import snntorch as snn
 
 
-# Define Network
 class CLAPP_SNN(nn.Module):
     def __init__(self, num_inputs, num_hidden: list, num_outputs,
                  beta=0.75):
@@ -54,12 +53,13 @@ class CLAPP_layer(nn.Module):
         self.fc = nn.Linear(num_inputs, num_hidden, bias=False)
         self.lif = snn.Leaky(beta=beta)
         # Recursive feedback
+        self.feedback = None
+        self.prev_mem, self.prev_inp, self.prev_spk = None, None, None
         self.pred = nn.Linear(num_hidden, num_hidden, bias=False)
-        self.retro = nn.Linear(num_hidden, num_hidden, bias=False)
+        # self.retro = nn.Linear(num_hidden, num_hidden, bias=False)
         self.reset()
 
     def reset(self):
-        self.prev_mem, self.prev_inp, self.prev_spk, self.feedback = None, None, None, None
         self.mem = self.lif.init_leaky()
     
     def CLAPP_loss(self, bf, cur_spk, pred):
@@ -75,14 +75,14 @@ class CLAPP_layer(nn.Module):
         spk, self.mem = self.lif(cur, self.mem)
         if self.training and bf != 0:
             # update the weights according to CLAPP learning rule
-            retrodiction = self.retro(spk)
+            retrodiction = nn.functional.linear(spk, self.pred.weight.T)  #  self.retro(spk)
             # first part Forward weights update
             if self.prev_mem is not None:
-                dW = bf * torch.diag(self.feedback) @ torch.outer(CLAPP_layer._surrogate(self.mem), inp-0.2)
+                dW = bf * torch.diag(self.feedback) @ torch.outer(CLAPP_layer._surrogate(self.mem), inp)
                 # prediction and retrodiction weight update
                 dW_pred = bf * torch.outer(spk, self.prev_spk)
                 self.pred.weight.grad = - dW_pred
-                self.retro.weight.grad = - dW_pred.T
+                # self.retro.weight.grad = - dW_pred.T
                 # second part of forward weight update
                 dW += bf * torch.diag(retrodiction) @ torch.outer(CLAPP_layer._surrogate(self.prev_mem), self.prev_inp)
 
@@ -92,7 +92,7 @@ class CLAPP_layer(nn.Module):
         self.prev_spk = spk
         self.prev_mem = self.mem
         self.prev_inp = inp
-        if self.feedback is not None:
+        if self.feedback is not None and bf != 0:
             loss = self.CLAPP_loss(bf, spk, self.feedback)
         else:
             loss = 0

@@ -1,5 +1,3 @@
-import tonic
-from tonic import transforms
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -18,6 +16,8 @@ def load_NMNIST(n_time_bins, batch_size=1):
         train_loader (DataLoader): The data loader for the training set.
         test_loader (DataLoader): The data loader for the test set.
     """
+    import tonic
+    from tonic import transforms
     # load NMNIST dataset
     sensor_size = tonic.datasets.NMNIST.sensor_size
     print(sensor_size)
@@ -78,7 +78,7 @@ def train(net, trainloader, epochs, device):
     # training loop
     prev_target = -1
     optimizer_clapp = torch.optim.Adam(net.clapp.parameters(), lr=1e-5)
-    optimizer_out = torch.optim.AdamW(net.out_proj.parameters(), lr=1e-3)
+    optimizer_out = torch.optim.AdamW(net.out_proj.parameters(), lr=1e-4, weight_decay=5e-2)
     net.train()
     target_list = []
     bf = 0
@@ -120,8 +120,6 @@ def train(net, trainloader, epochs, device):
 
             if i % 1000 == 0 and i > 1:
                 print(f"Epoch {epoch}, Iteration {i} \nTrain Loss: {sum(loss_hist[-1000:])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-2000:]).sum(axis=0)/2000}")
-            if i == 1e3:
-                break
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
 def test(net, testloader, device):
@@ -130,6 +128,7 @@ def test(net, testloader, device):
     mem_history = []
     target_list = []
     loss_list = []
+    clapp_losses = []
     with torch.no_grad():
         for i, (data, targets) in tqdm(enumerate(iter(testloader))):
             net.reset()
@@ -137,7 +136,14 @@ def test(net, testloader, device):
             targets = targets.to(device)
             logit_list = []
             for step in range(data.shape[0]):
-                logits, mem_his, _ = net(data[step].flatten(), targets, 0)
+                if step == data.shape[0] - 1:
+                    bf = -1
+                elif step == data.shape[0] - 2:
+                    bf = 1
+                else: bf = 0
+                logits, mem_his, clapp_loss = net(data[step].flatten(), targets, bf)
+                if bf != 0:
+                    clapp_losses.append(clapp_loss)
                 logit_list.append(logits)
                 mem_history.append(mem_his)
                 # clapp_loss_hist.append(clapp_loss)
@@ -146,4 +152,4 @@ def test(net, testloader, device):
             loss = torch.nn.functional.cross_entropy(pred, targets.squeeze())
             loss_per_class[targets] += loss
             loss_list.append(loss)
-    return torch.stack(loss_list), loss_per_class, mem_history, target_list
+    return torch.stack(loss_list), loss_per_class, mem_history, target_list, clapp_losses
