@@ -63,7 +63,7 @@ class CLAPP_layer(nn.Module):
         self.mem = self.lif.init_leaky()
     
     def CLAPP_loss(self, bf, cur_spk, pred):
-        cur_spk = cur_spk - 0.5
+        # cur_spk = cur_spk - 0.5
         return - bf * torch.dot(cur_spk, pred) / pred.shape[0]
 
     @staticmethod
@@ -78,13 +78,13 @@ class CLAPP_layer(nn.Module):
             retrodiction = nn.functional.linear(spk, self.pred.weight.T)  #  self.retro(spk)
             # first part Forward weights update
             if self.prev_mem is not None:
-                dW = bf * torch.diag(self.feedback) @ torch.outer(CLAPP_layer._surrogate(self.mem), inp)
+                dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.mem), inp)
                 # prediction and retrodiction weight update
                 dW_pred = bf * torch.outer(spk, self.prev_spk)
                 self.pred.weight.grad = - dW_pred
                 # self.retro.weight.grad = - dW_pred.T
                 # second part of forward weight update
-                dW += bf * torch.diag(retrodiction) @ torch.outer(CLAPP_layer._surrogate(self.prev_mem), self.prev_inp)
+                dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_mem), self.prev_inp)
 
                 self.fc.weight.grad = -dW
         # print(self.pred.weight.mean())

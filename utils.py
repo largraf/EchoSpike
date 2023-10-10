@@ -35,11 +35,34 @@ def load_NMNIST(n_time_bins, batch_size=1):
     test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
     return train_loader, test_loader
 
-def load_PMNIST(n_time_steps, batch_size=1, scale=1):
+def load_PMNIST(n_time_steps, batch_size=1, scale=1, patches=False):
     import torchvision
     import torchvision.transforms as transforms
     transform = transforms.Compose([transforms.ToTensor(),
                                     lambda x: snn.spikegen.rate(x*scale, n_time_steps).view(n_time_steps, -1)])
+    if patches:
+        transform = transforms.Compose([transforms.ToTensor(),
+                                        lambda x: torch.stack([x[:,:14,:14], x[:,:14,14:], x[:,14:,14:], x[:,14:,:14]])])
+    trainset = torchvision.datasets.MNIST(root='./data', 
+                                            train=True, 
+                                       transform=transform,  
+                                           download=True)
+    testset = torchvision.datasets.MNIST(root='./data', 
+                                            train=False, 
+                                       transform=transform,  
+                                           download=True)
+    
+    train_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, 
+                                            shuffle=True)
+    test_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, 
+                                            shuffle=False) 
+    return train_loader, test_loader
+
+def load_half_MNIST(batch_size=1):
+    import torchvision
+    import torchvision.transforms as transforms
+    transform = transforms.Compose([transforms.ToTensor(),
+                                    lambda x: torch.stack([x[:,:,:14], x[:,:,14:]])])
     trainset = torchvision.datasets.MNIST(root='./data', 
                                             train=True, 
                                        transform=transform,  
@@ -78,7 +101,7 @@ def train(net, trainloader, epochs, device):
     # training loop
     prev_target = -1
     optimizer_clapp = torch.optim.Adam(net.clapp.parameters(), lr=1e-5)
-    optimizer_out = torch.optim.AdamW(net.out_proj.parameters(), lr=1e-4, weight_decay=5e-2)
+    optimizer_out = torch.optim.AdamW(net.out_proj.parameters(), lr=1e-4, weight_decay=1)
     net.train()
     target_list = []
     bf = 0
@@ -88,9 +111,11 @@ def train(net, trainloader, epochs, device):
             data = data.squeeze(0).float().to(device)
             if targets == prev_target:
                 continue
-            prev_target = targets
             logits_per_step = []
             for step in range(data.shape[0]):
+                if bf == -2:
+                    bf = -1
+                    continue
                 optimizer_clapp.zero_grad()
                 optimizer_out.zero_grad()
                 target_list.append(targets)
@@ -102,24 +127,22 @@ def train(net, trainloader, epochs, device):
                     clapp_loss_hist.append(clapp_loss)
                     optimizer_clapp.step()
                 optimizer_out.step()
-
-                if step == data.shape[0] - 1:
-                    bf = -1
-                elif step == data.shape[0] - 2:
-                    bf = 1
+                if step == 0:
+                    coin_flip = torch.rand(1) > 0.5
+                    if coin_flip:
+                        bf = -2
+                        break
+                    else:
+                        bf = 1
                 else:
                     bf = 0
-                # coin_flip = torch.rand(1) > 0.5
-                # if coin_flip:
-                #     break
-                # else:
-                #     bf = 1
-            loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), targets)
+            # loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), targets)
             # Store loss history for future plotting
-            loss_hist.append(loss_val.item()) 
+            # loss_hist.append(loss_val.item()) 
 
             if i % 1000 == 0 and i > 1:
-                print(f"Epoch {epoch}, Iteration {i} \nTrain Loss: {sum(loss_hist[-1000:])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-2000:]).sum(axis=0)/2000}")
+                print(f"Epoch {epoch}, Iteration {i} \nTrain Loss: {sum([0])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-2000:]).sum(axis=0)/2000}")
+            prev_target = targets
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
 def test(net, testloader, device):
@@ -129,6 +152,8 @@ def test(net, testloader, device):
     target_list = []
     loss_list = []
     clapp_losses = []
+
+    bf = 0
     with torch.no_grad():
         for i, (data, targets) in tqdm(enumerate(iter(testloader))):
             net.reset()
@@ -136,11 +161,6 @@ def test(net, testloader, device):
             targets = targets.to(device)
             logit_list = []
             for step in range(data.shape[0]):
-                if step == data.shape[0] - 1:
-                    bf = -1
-                elif step == data.shape[0] - 2:
-                    bf = 1
-                else: bf = 0
                 logits, mem_his, clapp_loss = net(data[step].flatten(), targets, bf)
                 if bf != 0:
                     clapp_losses.append(clapp_loss)
@@ -148,6 +168,11 @@ def test(net, testloader, device):
                 mem_history.append(mem_his)
                 # clapp_loss_hist.append(clapp_loss)
                 target_list.append(targets)
+                if step == data.shape[0] - 1:
+                    bf = -1
+                elif step == data.shape[0] - 2:
+                    bf = 1
+                else: bf = 0
             pred = torch.stack(logit_list).sum(axis=0)
             loss = torch.nn.functional.cross_entropy(pred, targets.squeeze())
             loss_per_class[targets] += loss

@@ -1,19 +1,19 @@
-from utils import load_NMNIST, load_PMNIST, train, test
+from utils import load_NMNIST, load_half_MNIST, train, test
 from model import CLAPP_SNN
 import numpy as np
 import torch
 
-device = 'cuda'
+device = 'cpu'
 epochs = 3
 batch_size = 1
-n_inputs = 28*28 #34 * 34 * 2
+n_inputs = 28*14 #34 * 34 * 2
 n_hidden = 2 * [512]
 n_outputs = 10
-model_name = 'SNN_CLAPP_0'
+model_name = 'SNN_CLAPP_0_patches.pt'
 
 # load dataset
 n_time_bins = 4
-train_loader, test_loader = load_PMNIST(n_time_bins, scale=0.9) #load_NMNIST(n_time_bins, batch_size=batch_size)
+train_loader, test_loader = load_half_MNIST() #load_NMNIST(n_time_bins, batch_size=batch_size)
 
 # train and save model
 SNN = CLAPP_SNN(n_inputs, n_hidden, n_outputs).to(device)
