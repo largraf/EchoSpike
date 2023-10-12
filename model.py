@@ -64,18 +64,20 @@ class CLAPP_layer(nn.Module):
     def reset(self):
         self.mem = self.lif.init_leaky()
     
-    def CLAPP_loss(self, bf, cur_spk, pred):
+    def CLAPP_loss(self, bf, cur_spk):
         # cur_spk = cur_spk - 0.5
-        return torch.relu(1 - bf * cur_spk * pred).sum() / pred.shape[0]
+        return torch.relu(1 - bf * (cur_spk * self.feedback).sum())
 
     @staticmethod
     def _surrogate(x):
         return 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
         # return torch.where(x < torch.ones(x.shape, device=x.device), 1 / (torch.pi * (1 + (torch.pi * x) ** 2, torch.zeros(x.shape, device=x.device))))
 
-    def _surrogate_feedback(self):
-        return (self.feedback > torch.ones_like(self.feedback)).float()
-        # return torch.where(x < torch.ones(x.shape, device=x.device), 1 / (torch.pi * (1 + (torch.pi * x) ** 2, torch.zeros(x.shape, device=x.device))))
+    def _surrogate_feedback(self, bf):
+        return (bf * self.feedback < torch.ones_like(self.feedback)).float()
+    
+    def _dL(self, loss):
+        return (loss < 1).float()
 
     def forward(self, inp, bf, dropin=0):
         cur = self.fc(inp)
@@ -83,18 +85,22 @@ class CLAPP_layer(nn.Module):
         if dropin > 0:
             rand_spks = torch.bernoulli(torch.ones_like(spk) * dropin)
             spk = torch.min(torch.ones_like(spk), spk + rand_spks)
+        if self.feedback is not None and bf != 0:
+            loss = self.CLAPP_loss(bf, spk)
+        else:
+            loss = 0
         if self.training and bf != 0:
             # update the weights according to CLAPP learning rule
+            bf_2 = bf * self._dL(loss)
             retrodiction = nn.functional.linear(spk, self.pred.weight.T)  #  self.retro(spk)
             # first part Forward weights update
             if self.prev_mem is not None:
-                dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.mem), inp)
+                dW = bf_2 * torch.outer(self.feedback * CLAPP_layer._surrogate(self.mem + spk), inp)
                 # prediction and retrodiction weight update
-                dW_pred = bf * torch.outer(spk*self._surrogate_feedback(), self.prev_spk)
+                dW_pred = bf_2 * torch.outer(spk, self.prev_spk)
                 self.pred.weight.grad = - dW_pred.T
-                # self.retro.weight.grad = - dW_pred.T
                 # second part of forward weight update
-                dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_mem), self.prev_inp)
+                dW = bf_2 * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_mem + self.prev_spk), self.prev_inp)
 
                 self.fc.weight.grad = -dW
         # print(self.pred.weight.mean())
@@ -102,10 +108,6 @@ class CLAPP_layer(nn.Module):
         self.prev_spk = spk
         self.prev_mem = self.mem
         self.prev_inp = inp
-        if self.feedback is not None and bf != 0:
-            loss = self.CLAPP_loss(bf, spk, self.feedback)
-        else:
-            loss = 0
         self.feedback = self.pred(spk)
 
         return spk, self.mem, loss
