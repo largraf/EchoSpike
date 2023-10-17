@@ -177,6 +177,7 @@ def train_sequences(net, trainloader, epochs, device):
             - mem_history (torch.Tensor): A tensor containing the LIF memory history.
             - target_list (list): A list of the target values.
     """
+    torch.set_grad_enabled(False)
     loss_hist = []
     clapp_loss_hist = []
     loss_fn = SF.ce_count_loss()
@@ -188,10 +189,9 @@ def train_sequences(net, trainloader, epochs, device):
     net.train()
     target_list = []
     for epoch in range(epochs):
-        net.reset()
         bf = 0
         for i, (data, targets) in enumerate(iter(trainloader)):
-            # net.reset()
+            net.reset()
             data = data.squeeze(0).float().to(device)
             if targets == prev_target:
                 continue
