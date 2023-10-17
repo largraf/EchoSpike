@@ -56,20 +56,24 @@ class CLAPP_layer(nn.Module):
         self.lif = snn.Leaky(beta=beta, reset_mechanism='zero')
         # Recursive feedback
         self.feedback = None
-        self.prev_mem, self.prev_spk = None, None
         self.inp_trace, self.spk_trace = None, None
+        self.prev_spk_trace, self.prev_inp_trace = None, None
         self.trace_decay = beta
         self.pred = nn.Linear(num_hidden, num_hidden, bias=False)
         # self.retro = nn.Linear(num_hidden, num_hidden, bias=False)
         self.reset()
 
-
-
     def reset(self):
         self.mem = self.lif.init_leaky()
+        if self.spk_trace is not None:
+            self.feedback = self.pred(self.spk_trace)
+            self.prev_spk_trace = self.spk_trace
+            self.prev_inp_trace = self.inp_trace
+            self.spk_trace = None
+            self.inp_trace = None
     
-    def CLAPP_loss(self, bf, cur_spk):
-        return torch.relu(100 - bf * (cur_spk * self.feedback).sum())
+    def CLAPP_loss(self, bf, current):
+        return torch.relu(50 - bf * (current * self.feedback).sum())
 
     @staticmethod
     def _surrogate(x):
@@ -92,37 +96,28 @@ class CLAPP_layer(nn.Module):
     def forward(self, inp, bf, dropin=0):
         cur = self.fc(inp)
         spk, self.mem = self.lif(cur, self.mem)
-        previous_inp_trace = self.inp_trace
-        previous_spk_trace = self.spk_trace
-        if bf == -1:
-            self.spk_trace = None
-        self.inp_trace = self._update_trace(self.inp_trace, inp)
-        self.spk_trace = self._update_trace(self.spk_trace, spk)
-        if dropin > 0:
-            rand_spks = torch.bernoulli(torch.ones_like(spk) * dropin)
-            spk = torch.min(torch.ones_like(spk), spk + rand_spks)
-        if self.feedback is not None and bf != 0:
-            loss = self.CLAPP_loss(bf, self.spk_trace)
-        else:
-            loss = 0
-        if self.training and bf != 0 and self._dL(loss):
-            # update the weights according to CLAPP learning rule
-            retrodiction = nn.functional.linear(spk, self.pred.weight.T)  #  self.retro(spk)
-            # first part Forward weights update
-            if self.prev_mem is not None:
-                dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.mem), self.inp_trace)
+        if self.training:
+            self.inp_trace = self._update_trace(self.inp_trace, inp)
+            self.spk_trace = self._update_trace(self.spk_trace, spk)
+            if dropin > 0:
+                rand_spks = torch.bernoulli(torch.ones_like(spk) * dropin)
+                spk = torch.min(torch.ones_like(spk), spk + rand_spks)
+            if self.feedback is not None and bf != 0:
+                loss = self.CLAPP_loss(bf, self.spk_trace)
+            else:
+                loss = 0
+            if bf != 0 and self._dL(loss) and self.prev_spk_trace is not None:
+                # update the weights according to CLAPP learning rule
+                retrodiction = nn.functional.linear(self.spk_trace, self.pred.weight.T)  #  self.retro(spk)
+                # first part Forward weights update
+                dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.spk_trace), self.inp_trace)
                 # prediction and retrodiction weight update
-                dW_pred = bf * torch.outer(previous_spk_trace, self.spk_trace) # (spk, self.prev_spk)
+                dW_pred = bf * torch.outer(self.spk_trace, self.prev_spk_trace) # (spk, self.prev_spk)
                 self.pred.weight.grad = - dW_pred
                 # second part of forward weight update
-                dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_mem), previous_inp_trace)
+                dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace), self.prev_inp_trace)
 
                 self.fc.weight.grad = -dW
-        self.prev_spk = spk
-        self.prev_mem = self.mem
-        self.feedback = self.pred(self.spk_trace)
-        if bf == -1:
-            self.inp_trace = inp
         return spk, self.mem, loss
 
 

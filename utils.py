@@ -35,6 +35,25 @@ def load_NMNIST(n_time_bins, batch_size=1):
     test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
     return train_loader, test_loader
 
+def load_SHD(n_time_bins, batch_size=1):
+    import tonic
+    from tonic import transforms
+    # load SHD dataset
+    sensor_size = tonic.datasets.SHD.sensor_size
+    print(sensor_size)
+    transf = [transforms.ToFrame(sensor_size=sensor_size,
+                                 n_time_bins=n_time_bins), lambda x: x.squeeze()]
+    frame_transform = transforms.Compose(transf)
+
+    trainset = tonic.datasets.SHD(save_to='./data',
+                                     transform=frame_transform, train=True)
+    testset = tonic.datasets.SHD(save_to='./data',
+                                    transform=frame_transform, train=False)
+
+    train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
+    return train_loader, test_loader
+
 def load_PMNIST(n_time_steps, batch_size=1, scale=1, patches=False):
     """
     Load the Poisson spike encoded MNIST dataset with the specified parameters.
@@ -161,7 +180,7 @@ def train(net, trainloader, epochs, device):
             prev_target = targets.cpu()
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
-def train_sequences(net, trainloader, epochs, device):
+def train_sample_wise(net, trainloader, epochs, device):
     """
     Trains a SNN.
 
@@ -191,33 +210,36 @@ def train_sequences(net, trainloader, epochs, device):
     for epoch in range(epochs):
         bf = 0
         for i, (data, targets) in enumerate(iter(trainloader)):
-            net.reset()
-            data = data.squeeze(0).float().to(device)
-            if targets == prev_target:
+            if targets == prev_target and bf == -1:
                 continue
-            logits_per_step = []
+            while True:
+                net.reset()
+                data = data.squeeze(0).float().to(device)
+                logits_per_step = []
 
-            for step in range(data.shape[0]):
-                optimizer_clapp.zero_grad()
-                optimizer_out.zero_grad()
-                target_list.append(targets)
-                targets = targets.to(device)
-
-                out_spk, _, clapp_loss = net(data[step].flatten(), targets, torch.tensor(bf, device=device))
-                logits_per_step.append(out_spk)
-                if bf != 0:
-                    clapp_loss_hist.append(clapp_loss)
-                    optimizer_clapp.step()
-                optimizer_out.step()
-                if step == data.shape[0] - 1:
+                for step in range(data.shape[0]):
+                    optimizer_clapp.zero_grad()
+                    optimizer_out.zero_grad()
+                    target_list.append(targets)
+                    targets = targets.to(device)
+                    factor = bf if step == data.shape[0]-1 else 0
+                    out_spk, _, clapp_loss = net(data[step].flatten(), targets, torch.tensor(factor, device=device))
+                    logits_per_step.append(out_spk)
+                    if factor != 0:
+                        clapp_loss_hist.append(clapp_loss)
+                        optimizer_clapp.step()
+                    optimizer_out.step()
+                coin_flip = torch.rand(1) > 0.5
+                if coin_flip:
                     bf = -1
-                elif step == data.shape[0] - 2:
-                    bf = 1
+                    break
                 else:
-                    bf = 0
+                    bf = 1
+    
             # loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), targets)
             # Store loss history for future plotting
             # loss_hist.append(loss_val.item()) 
+            # coin flip
 
             if i % 1000 == 0 and i > 1:
                 print(f"Epoch {epoch}, Iteration {i} \nTrain Loss: {sum([0])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-2000:]).sum(axis=0)/2000}")
