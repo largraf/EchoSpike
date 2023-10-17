@@ -57,7 +57,7 @@ class CLAPP_layer(nn.Module):
         # Recursive feedback
         self.feedback = None
         self.prev_mem, self.prev_inp, self.prev_spk = None, None, None
-        self.trace = torch.zeros(num_hidden)
+        self.inp_trace = None
         self.trace_decay = beta
         self.pred = nn.Linear(num_hidden, num_hidden, bias=False)
         # self.retro = nn.Linear(num_hidden, num_hidden, bias=False)
@@ -70,7 +70,7 @@ class CLAPP_layer(nn.Module):
         self.trace = None
     
     def CLAPP_loss(self, bf, cur_spk):
-        return torch.relu(50 - bf * (cur_spk * self.feedback).sum())
+        return torch.relu(100 - bf * (cur_spk * self.feedback).sum())
 
     @staticmethod
     def _surrogate(x):
@@ -81,18 +81,19 @@ class CLAPP_layer(nn.Module):
         return (bf * self.feedback < torch.ones_like(self.feedback)).float()
 
     def _update_trace(self, spk):
-        if self.trace is None:
-            self.trace = spk
+        if self.inp_trace is None:
+            self.inp_trace = spk
         else:
-            self.trace = self.trace_decay * self.trace + spk
-    
+            self.inp_trace = self.trace_decay * self.inp_trace + spk
+     
     def _dL(self, loss) -> bool:
         return loss > 0
 
     def forward(self, inp, bf, dropin=0):
         cur = self.fc(inp)
         spk, self.mem = self.lif(cur, self.mem)
-        self._update_trace(spk)
+        previous_trace = self.inp_trace
+        self._update_trace(inp)
         if dropin > 0:
             rand_spks = torch.bernoulli(torch.ones_like(spk) * dropin)
             spk = torch.min(torch.ones_like(spk), spk + rand_spks)
@@ -105,12 +106,12 @@ class CLAPP_layer(nn.Module):
             retrodiction = nn.functional.linear(spk, self.pred.weight.T)  #  self.retro(spk)
             # first part Forward weights update
             if self.prev_mem is not None:
-                dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.mem), inp)
+                dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.mem), self.inp_trace)
                 # prediction and retrodiction weight update
                 dW_pred = bf * torch.outer(spk, self.prev_spk)
                 self.pred.weight.grad = - dW_pred
                 # second part of forward weight update
-                dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_mem), self.prev_inp)
+                dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_mem), previous_trace)
 
                 self.fc.weight.grad = -dW
         self.prev_spk = spk

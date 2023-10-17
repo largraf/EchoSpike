@@ -123,9 +123,9 @@ def train(net, trainloader, epochs, device):
     loss_fn = SF.ce_count_loss()
     # training loop
     prev_target = -1
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp] +
-                                       [{"params": par.pred.parameters(), 'lr': 1e-4} for par in net.clapp])
-    optimizer_out = torch.optim.SGD(net.out_proj.parameters(), lr=1e-4)
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp] +
+                                       [{"params": par.pred.parameters(), 'lr': 1e-5} for par in net.clapp])
+    optimizer_out = torch.optim.SGD(net.out_proj.parameters(), lr=1e-5)
     net.train()
     target_list = []
     bf = 0
@@ -182,14 +182,14 @@ def train_sequences(net, trainloader, epochs, device):
     loss_fn = SF.ce_count_loss()
     # training loop
     prev_target = -1
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp] +
-                                       [{"params": par.pred.parameters(), 'lr': 1e-4} for par in net.clapp])
-    optimizer_out = torch.optim.SGD(net.out_proj.parameters(), lr=1e-4)
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp] +
+                                       [{"params": par.pred.parameters(), 'lr': 1e-5} for par in net.clapp])
+    optimizer_out = torch.optim.SGD(net.out_proj.parameters(), lr=1e-5)
     net.train()
     target_list = []
-    bf = 0
     for epoch in range(epochs):
         net.reset()
+        bf = 0
         for i, (data, targets) in enumerate(iter(trainloader)):
             # net.reset()
             data = data.squeeze(0).float().to(device)
