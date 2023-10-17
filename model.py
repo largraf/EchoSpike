@@ -37,7 +37,7 @@ class CLAPP_SNN(nn.Module):
             clapp_in = inp
             for idx, clapp_layer in enumerate(self.clapp):
                 clapp_in, mem, loss = clapp_layer(clapp_in, bf)
-                mems[idx] = clapp_in
+                mems[idx] = mem
                 losses[idx] = loss
             # Final output projection
             out_spk, out_mem = self.out_proj(clapp_in, target)
@@ -87,7 +87,7 @@ class CLAPP_layer(nn.Module):
         if trace is None:
             trace = spk
         else:
-            trace = self.trace_decay * trace + spk
+            trace = trace + spk/10# self.trace_decay * trace + spk
         return trace
      
     def _dL(self, loss) -> bool:
@@ -96,16 +96,15 @@ class CLAPP_layer(nn.Module):
     def forward(self, inp, bf, dropin=0):
         cur = self.fc(inp)
         spk, self.mem = self.lif(cur, self.mem)
+        loss = 0
+        self.spk_trace = self._update_trace(self.spk_trace, spk)
         if self.training:
             self.inp_trace = self._update_trace(self.inp_trace, inp)
-            self.spk_trace = self._update_trace(self.spk_trace, spk)
             if dropin > 0:
                 rand_spks = torch.bernoulli(torch.ones_like(spk) * dropin)
                 spk = torch.min(torch.ones_like(spk), spk + rand_spks)
             if self.feedback is not None and bf != 0:
                 loss = self.CLAPP_loss(bf, self.spk_trace)
-            else:
-                loss = 0
             if bf != 0 and self._dL(loss) and self.prev_spk_trace is not None:
                 # update the weights according to CLAPP learning rule
                 retrodiction = nn.functional.linear(self.spk_trace, self.pred.weight.T)  #  self.retro(spk)
@@ -118,7 +117,9 @@ class CLAPP_layer(nn.Module):
                 dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace), self.prev_inp_trace)
 
                 self.fc.weight.grad = -dW
-        return spk, self.mem, loss
+        elif bf != 0 and self.feedback is not None:
+            loss = self.CLAPP_loss(bf, self.spk_trace)
+        return spk, self.spk_trace, loss
 
 
 class CLAPP_out(nn.Module):

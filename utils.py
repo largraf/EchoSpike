@@ -207,10 +207,10 @@ def train_sample_wise(net, trainloader, epochs, device):
     optimizer_out = torch.optim.SGD(net.out_proj.parameters(), lr=1e-5)
     net.train()
     target_list = []
+    bf = 0
     for epoch in range(epochs):
-        bf = 0
         for i, (data, targets) in enumerate(iter(trainloader)):
-            if targets == prev_target and bf == -1:
+            if targets == prev_target:
                 continue
             while True:
                 net.reset()
@@ -218,17 +218,18 @@ def train_sample_wise(net, trainloader, epochs, device):
                 logits_per_step = []
 
                 for step in range(data.shape[0]):
-                    optimizer_clapp.zero_grad()
-                    optimizer_out.zero_grad()
                     target_list.append(targets)
                     targets = targets.to(device)
                     factor = bf if step == data.shape[0]-1 else 0
+                    if factor != 0:
+                        optimizer_clapp.zero_grad()
+                        optimizer_out.zero_grad()
                     out_spk, _, clapp_loss = net(data[step].flatten(), targets, torch.tensor(factor, device=device))
                     logits_per_step.append(out_spk)
                     if factor != 0:
                         clapp_loss_hist.append(clapp_loss)
                         optimizer_clapp.step()
-                    optimizer_out.step()
+                        optimizer_out.step()
                 coin_flip = torch.rand(1) > 0.5
                 if coin_flip:
                     bf = -1
@@ -239,7 +240,6 @@ def train_sample_wise(net, trainloader, epochs, device):
             # loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), targets)
             # Store loss history for future plotting
             # loss_hist.append(loss_val.item()) 
-            # coin flip
 
             if i % 1000 == 0 and i > 1:
                 print(f"Epoch {epoch}, Iteration {i} \nTrain Loss: {sum([0])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-2000:]).sum(axis=0)/2000}")
@@ -276,7 +276,7 @@ def test(net, testloader, device):
             loss_list.append(loss)
     return torch.stack(loss_list), loss_per_class, mem_history, target_list, clapp_losses
 
-def test_old(net, testloader, device):
+def test_sample_wise(net, testloader, device):
     torch.set_grad_enabled(False)
     loss_per_class = 10*[0]
     net.eval()
@@ -288,22 +288,20 @@ def test_old(net, testloader, device):
     bf = 0
     with torch.no_grad():
         for i, (data, targets) in enumerate(iter(testloader)):
+            net.reset()
             data = data.squeeze(0).float().to(device)
             targets = targets.to(device)
             logit_list = []
             for step in range(data.shape[0]):
-                net.reset()
                 logits, mem_his, clapp_loss = net(data[step].flatten(), targets, bf)
                 if bf != 0:
                     clapp_losses.append(clapp_loss)
+                    mem_history.append(mem_his)
+                    target_list.append(targets)
                 logit_list.append(logits)
-                mem_history.append(mem_his)
                 # clapp_loss_hist.append(clapp_loss)
-                target_list.append(targets)
-                if step == data.shape[0] - 1:
+                if step == data.shape[0] - 2:
                     bf = -1
-                elif step == data.shape[0] - 2:
-                    bf = 1
                 else: bf = 0
             pred = torch.stack(logit_list).sum(axis=0)
             loss = torch.nn.functional.cross_entropy(pred, targets.squeeze())
