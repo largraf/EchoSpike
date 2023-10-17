@@ -36,6 +36,19 @@ def load_NMNIST(n_time_bins, batch_size=1):
     return train_loader, test_loader
 
 def load_PMNIST(n_time_steps, batch_size=1, scale=1, patches=False):
+    """
+    Load the Poisson spike encoded MNIST dataset with the specified parameters.
+
+    Parameters:
+        n_time_steps (int): The number of time steps for the spike encoding.
+        batch_size (int, optional): The batch size for the data loaders. Default is 1.
+        scale (int, optional): The scaling factor for the spike encoding. Default is 1.
+        patches (bool, optional): Whether to load the dataset in 4 patches or not. Default is False.
+
+    Returns:
+        train_loader (torch.utils.data.DataLoader): The data loader for the training set.
+        test_loader (torch.utils.data.DataLoader): The data loader for the test set.
+    """
     import torchvision
     import torchvision.transforms as transforms
     transform = transforms.Compose([transforms.ToTensor(),
@@ -59,6 +72,16 @@ def load_PMNIST(n_time_steps, batch_size=1, scale=1, patches=False):
     return train_loader, test_loader
 
 def load_half_MNIST(batch_size=1):
+    """
+    Load the MNIST dataset and split images into two halfs.
+    
+    Parameters:
+        batch_size (int): The number of samples per batch. Default is 1.
+        
+    Returns:
+        train_loader (DataLoader): A DataLoader object for the train set.
+        test_loader (DataLoader): A DataLoader object for the test set.
+    """
     import torchvision
     import torchvision.transforms as transforms
     transform = transforms.Compose([transforms.ToTensor(),
@@ -94,24 +117,27 @@ def train(net, trainloader, epochs, device):
             - mem_history (torch.Tensor): A tensor containing the LIF memory history.
             - target_list (list): A list of the target values.
     """
+    torch.set_grad_enabled(False)
     loss_hist = []
     clapp_loss_hist = []
     loss_fn = SF.ce_count_loss()
     # training loop
     prev_target = -1
-    optimizer_clapp = torch.optim.Adam(net.clapp.parameters(), lr=1e-5)
-    optimizer_out = torch.optim.AdamW(net.out_proj.parameters(), lr=1e-4, weight_decay=1)
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp] +
+                                       [{"params": par.pred.parameters(), 'lr': 1e-4} for par in net.clapp])
+    optimizer_out = torch.optim.SGD(net.out_proj.parameters(), lr=1e-4)
     net.train()
     target_list = []
     bf = 0
     for epoch in range(epochs):
         for i, (data, targets) in enumerate(iter(trainloader)):
-            net.reset()
+            # net.reset()
             data = data.squeeze(0).float().to(device)
             if targets == prev_target:
                 continue
             logits_per_step = []
             for step in range(data.shape[0]):
+                # net.reset()
                 optimizer_clapp.zero_grad()
                 optimizer_out.zero_grad()
                 target_list.append(targets)
@@ -135,7 +161,7 @@ def train(net, trainloader, epochs, device):
             prev_target = targets.cpu()
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
-def train_half(net, trainloader, epochs, device):
+def train_sequences(net, trainloader, epochs, device):
     """
     Trains a SNN.
 
@@ -156,40 +182,37 @@ def train_half(net, trainloader, epochs, device):
     loss_fn = SF.ce_count_loss()
     # training loop
     prev_target = -1
-    optimizer_clapp = torch.optim.Adam(net.clapp.parameters(), lr=1e-5)
-    optimizer_out = torch.optim.AdamW(net.out_proj.parameters(), lr=1e-4, weight_decay=1)
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp] +
+                                       [{"params": par.pred.parameters(), 'lr': 1e-4} for par in net.clapp])
+    optimizer_out = torch.optim.SGD(net.out_proj.parameters(), lr=1e-4)
     net.train()
     target_list = []
     bf = 0
     for epoch in range(epochs):
+        net.reset()
         for i, (data, targets) in enumerate(iter(trainloader)):
-            net.reset()
+            # net.reset()
             data = data.squeeze(0).float().to(device)
             if targets == prev_target:
                 continue
             logits_per_step = []
+
             for step in range(data.shape[0]):
-                if bf == -2:
-                    bf = -1
-                    continue
                 optimizer_clapp.zero_grad()
                 optimizer_out.zero_grad()
                 target_list.append(targets)
                 targets = targets.to(device)
 
-                logit_list, _, clapp_loss = net(data[step].flatten(), targets, torch.tensor(bf, device=device))
-                logits_per_step.append(logit_list)
+                out_spk, _, clapp_loss = net(data[step].flatten(), targets, torch.tensor(bf, device=device))
+                logits_per_step.append(out_spk)
                 if bf != 0:
                     clapp_loss_hist.append(clapp_loss)
                     optimizer_clapp.step()
                 optimizer_out.step()
-                if step == 0:
-                    coin_flip = torch.rand(1) > 0.5
-                    if coin_flip:
-                        bf = -2
-                        break
-                    else:
-                        bf = 1
+                if step == data.shape[0] - 1:
+                    bf = -1
+                elif step == data.shape[0] - 2:
+                    bf = 1
                 else:
                     bf = 0
             # loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), targets)
@@ -202,6 +225,7 @@ def train_half(net, trainloader, epochs, device):
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
 def test(net, testloader, device):
+    torch.set_grad_enabled(False)
     loss_per_class = 10*[0]
     net.eval()
     mem_history = []
@@ -231,6 +255,7 @@ def test(net, testloader, device):
     return torch.stack(loss_list), loss_per_class, mem_history, target_list, clapp_losses
 
 def test_old(net, testloader, device):
+    torch.set_grad_enabled(False)
     loss_per_class = 10*[0]
     net.eval()
     mem_history = []
@@ -241,11 +266,11 @@ def test_old(net, testloader, device):
     bf = 0
     with torch.no_grad():
         for i, (data, targets) in enumerate(iter(testloader)):
-            net.reset()
             data = data.squeeze(0).float().to(device)
             targets = targets.to(device)
             logit_list = []
             for step in range(data.shape[0]):
+                net.reset()
                 logits, mem_his, clapp_loss = net(data[step].flatten(), targets, bf)
                 if bf != 0:
                     clapp_losses.append(clapp_loss)
