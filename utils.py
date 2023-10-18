@@ -64,6 +64,71 @@ def train(net, trainloader, epochs, device):
             prev_target = targets.cpu()
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
+def train_shd_supervised_clapp(net, trainloader, epochs, device):
+    """
+    Trains a SNN.
+
+    Args:
+        net (torch.nn.Module): The neural network model to be trained.
+        trainloader (torch.utils.data.DataLoader): The data loader for the training dataset.
+        epochs (int): The number of epochs for training.
+        device (torch.device): The device to use for training the model.
+
+    Returns:
+        tuple: A tuple containing the following:
+            - loss_hist (list): A list of the loss values during training.
+            - mem_history (torch.Tensor): A tensor containing the LIF memory history.
+            - target_list (list): A list of the target values.
+    """
+    torch.set_grad_enabled(False)
+    loss_hist = []
+    clapp_loss_hist = []
+    loss_fn = SF.ce_count_loss()
+    # training loop
+    prev_target = -1
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp] +
+                                       [{"params": par.pred.parameters(), 'lr': 1e-3} for par in net.clapp])
+    optimizer_out = torch.optim.SGD(net.out_proj.parameters(), lr=1e-4)
+    net.train()
+    target_list = []
+    bf = 0
+    target = torch.randint(trainloader.num_classes, (1,)).item()
+    while True:
+        data, target = trainloader.next_item(int(target), contrastive=(bf==-1))
+        net.reset()
+        data = data.squeeze(0).float().to(device)
+        logits_per_step = []
+        target_list.append(target)
+        target = target.to(device)
+
+        for step in range(data.shape[0]):
+            factor = bf if step == data.shape[0]-1 else 0
+            if factor != 0:
+                optimizer_clapp.zero_grad()
+                optimizer_out.zero_grad()
+            out_spk, _, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device))
+            logits_per_step.append(out_spk)
+            if factor != 0:
+                clapp_loss_hist.append(clapp_loss)
+                optimizer_clapp.step()
+                optimizer_out.step()
+        coin_flip = torch.rand(1) > 0.5
+        if coin_flip:
+            bf = -1
+        else:
+            bf = 1
+
+        # loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), targets)
+        # Store loss history for future plotting
+        # loss_hist.append(loss_val.item()) 
+
+        epoch = len(clapp_loss_hist) // len(trainloader)
+        if len(clapp_loss_hist) % 1000 == 0 and len(clapp_loss_hist) > 1:
+            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nTrain Loss: {sum([0])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-1000:]).sum(axis=0)/1000}")
+        if epoch >= epochs:
+            break
+    return loss_hist, target_list, torch.stack(clapp_loss_hist)
+
 def train_sample_wise(net, trainloader, epochs, device):
     """
     Trains a SNN.

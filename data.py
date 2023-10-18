@@ -33,17 +33,51 @@ def load_NMNIST(n_time_bins, batch_size=1):
     test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
     return train_loader, test_loader
 
+class SHD_loader():
+    def __init__(self, x, y, num_classes):
+        self.x = x
+        self.y = y
+        self.num_classes = num_classes
+        self.idx_per_target = num_classes * [0]
+        self.target_indeces = [torch.argwhere(self.y == t).squeeze() for t in range(num_classes)]
+        for target in range(self.num_classes):
+            self.shuffle(target)
+
+    def __len__(self):
+        return len(self.x)
+
+    
+    def shuffle(self, target):
+        idx = torch.randperm(len(self.target_indeces[target]))
+        self.target_indeces[target] = self.target_indeces[target][idx]
+        self.idx_per_target[target] = 0
+    
+    def next_item(self, target: int, contrastive=False):
+        if contrastive:
+            next_target = torch.randint(0, self.num_classes-1, (1,)).item()
+            if next_target >= target:
+                next_target += 1
+            target = next_target
+        if self.idx_per_target[target] >= len(self.target_indeces[target]):
+            self.shuffle(target)
+        idx = self.target_indeces[target][self.idx_per_target[target]]
+        self.idx_per_target[target] += 1
+        return self.x[idx], self.y[idx]
+
+
 def load_SHD(n_time_bins, batch_size=1):
     # load SHD dataset
     shd_train_x = torch.load('./data/SHD/shd_train_x.torch')
-    shd_train_y = torch.load('./data/SHD/shd_train_y.torch')
+    shd_train_y = torch.load('./data/SHD/shd_train_y.torch').squeeze()
     trainset = TensorDataset(shd_train_x, shd_train_y)
-    train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
+    # train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
+    train_loader = SHD_loader(shd_train_x, shd_train_y, 20)
 
     shd_test_x = torch.load('./data/SHD/shd_test_x.torch')
-    shd_test_y = torch.load('./data/SHD/shd_test_y.torch')
+    shd_test_y = torch.load('./data/SHD/shd_test_y.torch').squeeze()
     testset = TensorDataset(shd_test_x, shd_test_y)
-    test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
+    # test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
+    test_loader = SHD_loader(shd_test_x, shd_test_y, 20)
     return train_loader, test_loader
 
 def load_PMNIST(n_time_steps, batch_size=1, scale=1, patches=False):
