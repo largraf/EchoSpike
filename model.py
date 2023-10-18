@@ -142,7 +142,7 @@ class CLAPP_out(nn.Module):
         spk, self.mem = self.lif(cur, self.mem)
         if self.training:
             # prediction weight update
-            target_spk = nn.functional.one_hot(target, num_classes=self.num_out)[0].float()
+            target_spk = nn.functional.one_hot(target.long(), num_classes=self.num_out).flatten().float()
             dW = torch.outer(target_spk - 0.1, inp)
             self.out_proj.weight.grad = -dW
 
