@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import DataLoader, TensorDataset
+import snntorch as snn
 
 
 def load_NMNIST(n_time_bins, batch_size=1):
@@ -45,7 +46,6 @@ class SHD_loader():
 
     def __len__(self):
         return len(self.x)
-
     
     def shuffle(self, target):
         idx = torch.randperm(len(self.target_indeces[target]))

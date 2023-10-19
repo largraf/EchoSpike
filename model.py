@@ -73,7 +73,7 @@ class CLAPP_layer(nn.Module):
             self.inp_trace = None
     
     def CLAPP_loss(self, bf, current):
-        return torch.relu(50 - bf * (current * self.feedback).sum())
+        return torch.relu(1 - bf * (current * self.feedback).sum())
 
     @staticmethod
     def _surrogate(x):
@@ -137,14 +137,20 @@ class CLAPP_out(nn.Module):
     def _dL(self, loss):
         return loss > 0
 
+    def _surrogate(self, x):
+        return 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
+
     def forward(self, inp, target):
         cur = self.out_proj(inp)
         spk, self.mem = self.lif(cur, self.mem)
         if self.training:
             # prediction weight update
             target_spk = nn.functional.one_hot(target.long(), num_classes=self.num_out).flatten().float()
-            dW = torch.outer(target_spk - 0.1, inp)
-            self.out_proj.weight.grad = -dW
+            dW = torch.outer((target_spk - spk) * self._surrogate(cur), inp)
+            if self.out_proj.weight.grad is not None:
+                self.out_proj.weight.grad -= dW
+            else:
+                self.out_proj.weight.grad = -dW
 
         return spk, self.mem
 

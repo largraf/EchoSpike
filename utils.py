@@ -86,9 +86,9 @@ def train_shd_supervised_clapp(net, trainloader, epochs, device):
     loss_fn = SF.ce_count_loss()
     # training loop
     prev_target = -1
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp] +
-                                       [{"params": par.pred.parameters(), 'lr': 1e-3} for par in net.clapp])
-    optimizer_out = torch.optim.SGD(net.out_proj.parameters(), lr=1e-4)
+    optimizer_clapp = torch.optim.Adam([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp] +
+                                       [{"params": par.pred.parameters(), 'lr': 1e-4} for par in net.clapp])
+    optimizer_out = torch.optim.Adam(net.out_proj.parameters(), lr=1e-4)
     net.train()
     target_list = []
     bf = 0
@@ -123,8 +123,8 @@ def train_shd_supervised_clapp(net, trainloader, epochs, device):
         # loss_hist.append(loss_val.item()) 
 
         epoch = len(clapp_loss_hist) // len(trainloader)
-        if len(clapp_loss_hist) % 1000 == 0 and len(clapp_loss_hist) > 1:
-            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nTrain Loss: {sum([0])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-1000:]).sum(axis=0)/1000}")
+        if len(clapp_loss_hist) % 200 == 0 and len(clapp_loss_hist) > 1:
+            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nTrain Loss: {sum([0])/200:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-200:]).sum(axis=0)/200}")
         if epoch >= epochs:
             break
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
@@ -256,4 +256,49 @@ def test_sample_wise(net, testloader, device):
             loss = torch.nn.functional.cross_entropy(pred, targets.squeeze())
             loss_per_class[targets] += loss
             loss_list.append(loss)
+    return torch.stack(loss_list), loss_per_class, mem_history, target_list, clapp_losses
+
+def test_SHD(net, testloader, device):
+    torch.set_grad_enabled(False)
+    loss_per_class = testloader.num_classes*[0]
+    net.eval()
+    mem_history = []
+    target_list = []
+    loss_list = []
+    clapp_losses = []
+    true_false = []
+
+    bf = 0
+    target = torch.randint(testloader.num_classes, (1,)).item()
+    while True:
+        data, target = testloader.next_item(int(target), contrastive=(bf==-1))
+        target_list.append(target)
+        net.reset()
+        data = data.squeeze(0).float().to(device)
+        target = target.to(device)
+        logit_list = []
+        activation_list = []
+        for step in range(data.shape[0]):
+            factor = bf if step == data.shape[0]-1 else 0
+            out_spk, activations, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device))
+            logit_list.append(out_spk)
+            activation_list.append(activations)
+            if factor != 0:
+                clapp_losses.append(clapp_loss)
+        mem_history.append(torch.stack(activation_list).sum(axis=0))
+        coin_flip = torch.rand(1) > 0.5
+        if coin_flip:
+            bf = -1
+        else:
+            bf = 1
+        pred = torch.stack(logit_list).sum(axis=0)
+        prediction = torch.argmax(pred)
+        if prediction.sum() > 0:
+            pass
+        true_false.append(prediction == target.squeeze())
+        loss = torch.nn.functional.cross_entropy(pred, target.squeeze().long())
+        loss_per_class[target.long()] += loss
+        loss_list.append(loss)
+        if len(loss_list) > len(testloader):
+            break
     return torch.stack(loss_list), loss_per_class, mem_history, target_list, clapp_losses
