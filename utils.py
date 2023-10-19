@@ -118,13 +118,13 @@ def train_shd_supervised_clapp(net, trainloader, epochs, device):
         else:
             bf = 1
 
-        # loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), targets)
+        loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), target.long().unsqueeze(0))
         # Store loss history for future plotting
-        # loss_hist.append(loss_val.item()) 
+        loss_hist.append(loss_val.item()) 
 
         epoch = len(clapp_loss_hist) // len(trainloader)
         if len(clapp_loss_hist) % 200 == 0 and len(clapp_loss_hist) > 1:
-            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nTrain Loss: {sum([0])/200:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-200:]).sum(axis=0)/200}")
+            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nTrain Loss: {sum(loss_hist[-200:])/200:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-200:]).sum(axis=0)/200}")
         if epoch >= epochs:
             break
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
