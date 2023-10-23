@@ -34,7 +34,7 @@ def load_NMNIST(n_time_bins, batch_size=1):
     test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
     return train_loader, test_loader
 
-class SHD_loader():
+class classwise_loader():
     def __init__(self, x, y, num_classes):
         self.x = x
         self.y = y
@@ -54,10 +54,13 @@ class SHD_loader():
     
     def next_item(self, target: int, contrastive=False):
         if contrastive:
-            next_target = torch.randint(0, self.num_classes-1, (1,)).item()
-            if next_target >= target:
-                next_target += 1
-            target = next_target
+            if target == -1:
+                target = torch.randint(0, self.num_classes, (1,)).item()
+            else:
+                next_target = torch.randint(0, self.num_classes-1, (1,)).item()
+                if next_target >= target:
+                    next_target += 1
+                target = next_target
         if self.idx_per_target[target] >= len(self.target_indeces[target]):
             self.shuffle(target)
         idx = self.target_indeces[target][self.idx_per_target[target]]
@@ -71,14 +74,42 @@ def load_SHD(n_time_bins, batch_size=1):
     shd_train_y = torch.load('./data/SHD/shd_train_y.torch').squeeze()
     trainset = TensorDataset(shd_train_x, shd_train_y)
     # train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
-    train_loader = SHD_loader(shd_train_x, shd_train_y, 20)
+    train_loader = classwise_loader(shd_train_x, shd_train_y, 20)
 
     shd_test_x = torch.load('./data/SHD/shd_test_x.torch')
     shd_test_y = torch.load('./data/SHD/shd_test_y.torch').squeeze()
     testset = TensorDataset(shd_test_x, shd_test_y)
     # test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
-    test_loader = SHD_loader(shd_test_x, shd_test_y, 20)
+    test_loader = classwise_loader(shd_test_x, shd_test_y, 20)
     return train_loader, test_loader
+
+def load_classwise_PMNIST(n_time_steps, batch_size=1, scale=1):
+    """
+    Load the Poisson spike encoded MNIST dataset with the specified parameters.
+
+    Parameters:
+        n_time_steps (int): The number of time steps for the spike encoding.
+        batch_size (int, optional): The batch size for the data loaders. Default is 1.
+        scale (int, optional): The scaling factor for the spike encoding. Default is 1.
+
+    Returns:
+        train_loader (torch.utils.data.DataLoader): The data loader for the training set.
+        test_loader (torch.utils.data.DataLoader): The data loader for the test set.
+    """
+    import torchvision
+    import torchvision.transforms as transforms
+    trainset = torchvision.datasets.MNIST(root='./data', 
+                                            train=True, 
+                                           download=True)
+    testset = torchvision.datasets.MNIST(root='./data', 
+                                            train=False, 
+                                           download=True)
+    train_x = snn.spikegen.rate(trainset.data * 2**-8 * scale, n_time_steps).swapaxes(0,1).view(trainset.data.shape[0], n_time_steps, -1)
+    test_x = snn.spikegen.rate(testset.data * 2**-8 * scale, n_time_steps).swapaxes(0,1).view(testset.data.shape[0], n_time_steps, -1)
+    train_loader = classwise_loader(train_x, trainset.targets, 10)
+    test_loader = classwise_loader(test_x, testset.targets, 10)
+    return train_loader, test_loader
+
 
 def load_PMNIST(n_time_steps, batch_size=1, scale=1, patches=False):
     """

@@ -64,6 +64,72 @@ def train(net, trainloader, epochs, device):
             prev_target = targets.cpu()
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
+def train_shd_segmented(net, trainloader, epochs, device, segment_size=20):
+    """
+    Trains a SNN.
+
+    Args:
+        net (torch.nn.Module): The neural network model to be trained.
+        trainloader (torch.utils.data.DataLoader): The data loader for the training dataset.
+        epochs (int): The number of epochs for training.
+        device (torch.device): The device to use for training the model.
+
+    Returns:
+        tuple: A tuple containing the following:
+            - loss_hist (list): A list of the loss values during training.
+            - mem_history (torch.Tensor): A tensor containing the LIF memory history.
+            - target_list (list): A list of the target values.
+    """
+    torch.set_grad_enabled(False)
+    loss_hist = []
+    clapp_loss_hist = []
+    loss_fn = SF.ce_count_loss()
+    # training loop
+    optimizer_clapp = torch.optim.AdamW([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp] +
+                                       [{"params": par.pred.parameters(), 'lr': 1e-4} for par in net.clapp])
+    optimizer_out = torch.optim.Adam(net.out_proj.parameters(), lr=1e-4)
+    net.train()
+    target_list = []
+    target = torch.randint(trainloader.num_classes, (1,)).item()
+    while True:
+        # Choose the next random target that is different from current target
+        data, target = trainloader.next_item(int(target), contrastive=True)
+        net.reset()
+        data = data.squeeze(0).float().to(device)
+        logits_per_step = []
+        target_list.append(target)
+        target = target.to(device)
+        predict_segment = torch.randint(data.shape[0]//segment_size - 1, (1,)).item() + 1
+
+        for step in range(data.shape[0]):
+            if step == segment_size * (predict_segment-1) - 1:
+                event = 'predict'
+            elif step == segment_size * predict_segment - 1:
+                event = 'evaluate'
+            else:
+                event = None
+            if event == 'evaluate':
+                optimizer_clapp.zero_grad()
+                optimizer_out.zero_grad()
+            out_spk, _, clapp_loss = net(data[step].flatten(), target, event)
+            logits_per_step.append(out_spk)
+            if event == 'evaluate':
+                clapp_loss_hist.append(clapp_loss)
+                optimizer_clapp.step()
+                optimizer_out.step()
+                break
+
+        loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), target.long().unsqueeze(0))
+        # Store loss history for future plotting
+        loss_hist.append(loss_val.item()) 
+
+        epoch = len(clapp_loss_hist) // len(trainloader)
+        if len(clapp_loss_hist) % 1000 == 0 and len(clapp_loss_hist) > 1:
+            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nTrain Loss: {sum(loss_hist[-1000:])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-1000:]).sum(axis=0)/1000}")
+        if epoch >= epochs:
+            break
+    return loss_hist, target_list, torch.stack(clapp_loss_hist)
+
 def train_shd_supervised_clapp(net, trainloader, epochs, device):
     """
     Trains a SNN.
@@ -86,7 +152,7 @@ def train_shd_supervised_clapp(net, trainloader, epochs, device):
     loss_fn = SF.ce_count_loss()
     # training loop
     prev_target = -1
-    optimizer_clapp = torch.optim.Adam([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp] +
+    optimizer_clapp = torch.optim.AdamW([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp] +
                                        [{"params": par.pred.parameters(), 'lr': 1e-4} for par in net.clapp])
     optimizer_out = torch.optim.Adam(net.out_proj.parameters(), lr=1e-4)
     net.train()
@@ -123,8 +189,8 @@ def train_shd_supervised_clapp(net, trainloader, epochs, device):
         loss_hist.append(loss_val.item()) 
 
         epoch = len(clapp_loss_hist) // len(trainloader)
-        if len(clapp_loss_hist) % 200 == 0 and len(clapp_loss_hist) > 1:
-            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nTrain Loss: {sum(loss_hist[-200:])/200:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-200:]).sum(axis=0)/200}")
+        if len(clapp_loss_hist) % 1000 == 0 and len(clapp_loss_hist) > 1:
+            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nTrain Loss: {sum(loss_hist[-1000:])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-1000:]).sum(axis=0)/1000}")
         if epoch >= epochs:
             break
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
@@ -301,4 +367,5 @@ def test_SHD(net, testloader, device):
         loss_list.append(loss)
         if len(loss_list) > len(testloader):
             break
+    print(f'Accuracy: {100*sum(true_false)/len(true_false):.2f}%')
     return torch.stack(loss_list), loss_per_class, mem_history, target_list, clapp_losses
