@@ -36,6 +36,7 @@ def load_NMNIST(n_time_bins, batch_size=1):
 
 class classwise_loader():
     def __init__(self, x, y, num_classes):
+        torch.manual_seed(123)
         self.x = x
         self.y = y
         self.num_classes = num_classes

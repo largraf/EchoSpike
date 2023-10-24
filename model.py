@@ -5,7 +5,7 @@ import snntorch as snn
 
 class CLAPP_SNN(nn.Module):
     def __init__(self, num_inputs, num_hidden: list, num_outputs,
-                 beta=0.75):
+                 beta=0.9, out_proj=True):
         """
         Initializes the CLAPP SNN with the given parameters.
 
@@ -16,6 +16,7 @@ class CLAPP_SNN(nn.Module):
             beta (float, optional): The beta value for initializing the leaky integrate and fire model. Defaults to 0.75.
         """
         super().__init__()
+        self.has_out_proj = out_proj
         # Initialized the CLAPP layers with shapes from num_hidden
         self.clapp = torch.nn.ModuleList([CLAPP_layer(num_inputs, num_hidden[0], beta)])
         for idx_hidden in range(1, len(num_hidden)):
@@ -23,28 +24,33 @@ class CLAPP_SNN(nn.Module):
                                           num_hidden[idx_hidden], beta))
 
         # initialize output layer
-        self.out_proj = CLAPP_out(num_hidden[-1], num_outputs, beta)#nn.Linear(num_hidden[-1], num_outputs)
+        if self.has_out_proj:
+            self.out_proj = CLAPP_out(num_hidden[-1], num_outputs, beta)
     
     def reset(self):
         for clapp_layer in self.clapp:
             clapp_layer.reset()
-        self.out_proj.reset()
+        if self.has_out_proj:
+            self.out_proj.reset()
 
     def forward(self, inp, target, bf: int, freeze: list=[]):
         with torch.no_grad():
-            mems = len(self.clapp)*[None]
+            spike_traces = len(self.clapp)*[None]
             losses = torch.zeros(len(self.clapp))
             clapp_in = inp
             for idx, clapp_layer in enumerate(self.clapp):
                 factor = bf if not idx in freeze else 0
-                clapp_in, mem, loss = clapp_layer(clapp_in, factor)
-                mems[idx] = mem
+                clapp_in, spk_trace, loss = clapp_layer(clapp_in, factor)
+                spike_traces[idx] = spk_trace
                 losses[idx] = loss
             # Final output projection
-            out_spk, out_mem = self.out_proj(clapp_in, target)
+            if self.has_out_proj:
+                out_spk, out_mem = self.out_proj(clapp_in, target)
+            else:
+                out_spk = clapp_in
 
 
-        return out_spk, torch.stack(mems), losses
+        return out_spk, torch.stack(spike_traces), losses
 
 class CLAPP_Sequence_SNN(nn.Module):
     def __init__(self, num_inputs, num_hidden: list, num_outputs,
@@ -184,7 +190,16 @@ class CLAPP_layer_segmented(nn.Module):
 
 
 class CLAPP_layer(nn.Module):
-    def __init__(self, num_inputs, num_hidden, beta):
+    def __init__(self, num_inputs:int, num_hidden: int, beta:float, n_time_steps: int=10):
+        """
+        Initializes a CLAPP layer for static data.
+
+        Parameters:
+            num_inputs (int): The number of input features.
+            num_hidden (int): The number of hidden units.
+            beta (float): The leaky parameter for the leaky integrate-and-fire neuron.
+            n_time_steps (int): The number of time steps.
+        """
         super().__init__()
         # feed forward part
         self.fc = nn.Linear(num_inputs, num_hidden, bias=False)
@@ -192,13 +207,13 @@ class CLAPP_layer(nn.Module):
             # too small weights create no spikes at all -> no learning
             self.fc.weight *= 8
         self.lif = snn.Leaky(beta=beta, reset_mechanism='zero')
+        self.n_time_steps = n_time_steps
         # Recursive feedback
         self.feedback = None
         self.inp_trace, self.spk_trace = None, None
         self.prev_spk_trace, self.prev_inp_trace = None, None
         self.trace_decay = beta
         self.pred = nn.Linear(num_hidden, num_hidden, bias=False)
-        # self.retro = nn.Linear(num_hidden, num_hidden, bias=False)
         self.reset()
 
     def reset(self):
@@ -216,13 +231,13 @@ class CLAPP_layer(nn.Module):
     @staticmethod
     def _surrogate(x):
         return 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
-        # return torch.where(x < torch.ones(x.shape, device=x.device), 1 / (torch.pi * (1 + (torch.pi * x) ** 2, torch.zeros(x.shape, device=x.device))))
 
     def _update_trace(self, trace, spk):
+        # non decaying trace for static data
         if trace is None:
             trace = spk
         else:
-            trace = trace + spk/10# self.trace_decay * trace + spk
+            trace = trace + spk/self.n_time_steps
         return trace
      
     def _dL(self, loss) -> bool:
