@@ -262,11 +262,16 @@ class CLAPP_layer(nn.Module):
                 dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.spk_trace), self.inp_trace)
                 # prediction and retrodiction weight update
                 dW_pred = bf * torch.outer(self.spk_trace, self.prev_spk_trace) # (spk, self.prev_spk)
-                self.pred.weight.grad = - dW_pred
+                if self.pred.weight.grad is None:
+                    self.pred.weight.grad = - dW_pred
+                else:
+                    self.pred.weight.grad -= dW_pred
                 # second part of forward weight update
                 dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace), self.prev_inp_trace)
-
-                self.fc.weight.grad = -dW
+                if self.fc.weight.grad is None:
+                    self.fc.weight.grad = -dW
+                else:
+                    self.fc.weight.grad -= dW
         elif bf != 0 and self.feedback is not None:
             loss = self.CLAPP_loss(bf, self.spk_trace)
         return spk, self.spk_trace, loss

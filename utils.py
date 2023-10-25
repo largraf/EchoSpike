@@ -130,7 +130,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20):
             break
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
-def train_samplewise_clapp(net, trainloader, epochs, device, model_name):
+def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_size=1):
     """
     Trains a SNN.
 
@@ -153,6 +153,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name):
     # training loop
     optimizer_clapp = torch.optim.AdamW([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp] +
                                        [{"params": par.pred.parameters(), 'lr': 1e-4} for par in net.clapp])
+    optimizer_clapp.zero_grad()
     net.train()
     bf = 0
     target = torch.randint(trainloader.num_classes, (1,)).item()
@@ -165,12 +166,12 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name):
 
         for step in range(data.shape[0]):
             factor = bf if step == data.shape[0]-1 else 0
-            if factor != 0:
-                optimizer_clapp.zero_grad()
             _, _, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device))
             if factor != 0:
                 clapp_loss_hist.append(clapp_loss)
-                optimizer_clapp.step()
+                if len(clapp_loss_hist) % batch_size == 0:
+                    optimizer_clapp.step()
+                    optimizer_clapp.zero_grad()
         coin_flip = torch.rand(1) > 0.5
         if coin_flip:
             bf = -1

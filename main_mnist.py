@@ -19,13 +19,13 @@ class Args:
         self.n_time_bins = 10
         self.model_name = 'SNN_CLAPP_mnist_3layer'
 args = Args()
-
+torch.manual_seed(123)
 # load dataset
 train_loader, test_loader = load_classwise_PMNIST(args.n_time_bins, scale=args.poisson_scale) 
 
 # train and save model
 SNN = CLAPP_SNN(args.n_inputs, args.n_hidden, args.n_outputs, beta=args.beta, out_proj=False).to(args.device)
-clapp_loss_hist = train_samplewise_clapp(SNN, train_loader, args.epochs, args.device, args.model_name)
+clapp_loss_hist = train_samplewise_clapp(SNN, train_loader, args.epochs, args.device, args.model_name, batch_size=args.batch_size)
 
 torch.save(SNN.state_dict(), f'models/{args.model_name}.pt')
 torch.save(clapp_loss_hist, f'models/{args.model_name}_clapp_loss_hist.pt')
