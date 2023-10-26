@@ -179,14 +179,15 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
             bf = 1
 
         epoch = len(clapp_loss_hist) // len(trainloader)
-        if len(clapp_loss_hist) % 1000 == 0 and len(clapp_loss_hist) > 1:
-            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-1000:]).sum(axis=0)/1000}")
+        if len(clapp_loss_hist) % 5000 == 0 and len(clapp_loss_hist) > 1:
+            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-5000:]).sum(axis=0)/5000}")
         if epoch >= epochs:
             break
-        if (epoch + 1) % 5 == 0:
+        if len(clapp_loss_hist) % len(trainloader) == 0 and(epoch + 1) % 5 == 0:
             # save checkpoint if performance improves
             last_epoch_loss = current_epoch_loss
             current_epoch_loss = torch.stack(clapp_loss_hist[-len(trainloader):]).mean().item()
+            print(f'epoch loss: {current_epoch_loss}')
             if current_epoch_loss < last_epoch_loss:
                 torch.save(net.state_dict(), f'models/{model_name}_epoch{epoch}.pt')
             
