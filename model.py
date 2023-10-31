@@ -8,12 +8,14 @@ class CLAPP_SNN(nn.Module):
                  beta=0.9, out_proj=True):
         """
         Initializes the CLAPP SNN with the given parameters.
+        This class is used for static data, such as poisson encodings of images.
 
         Args:
             num_inputs (int): The number of input units.
             num_hidden (list): A list of integers representing the number of hidden units in each layer.
             num_outputs (int): The number of output units.
             beta (float, optional): The beta value for initializing the leaky integrate and fire model. Defaults to 0.75.
+            out_proj (bool, optional): Whether to include an output layer. Defaults to True.
         """
         super().__init__()
         self.has_out_proj = out_proj
@@ -36,35 +38,39 @@ class CLAPP_SNN(nn.Module):
     def forward(self, inp, target, bf: int, freeze: list=[]):
         with torch.no_grad():
             spike_traces = len(self.clapp)*[None]
+            out_spk = []
             losses = torch.zeros(len(self.clapp))
             clapp_in = inp
             for idx, clapp_layer in enumerate(self.clapp):
                 factor = bf if not idx in freeze else 0
                 clapp_in, spk_trace, loss = clapp_layer(clapp_in, factor)
+                out_spk.append(clapp_in)
                 spike_traces[idx] = spk_trace
                 losses[idx] = loss
             # Final output projection
             if self.has_out_proj:
-                out_spk, out_mem = self.out_proj(clapp_in, target)
-            else:
-                out_spk = clapp_in
-
+                spk, out_mem = self.out_proj(clapp_in, target)
+                out_spk.append(spk)
 
         return out_spk, torch.stack(spike_traces), losses
 
 class CLAPP_Sequence_SNN(nn.Module):
     def __init__(self, num_inputs, num_hidden: list, num_outputs,
-                 beta=0.96, segment_length=20):
+                 beta=0.96, segment_length=20, out_proj=True):
         """
         Initializes the CLAPP SNN with the given parameters.
+        This class is used for data with temporal structure, such as SHD.
 
         Args:
             num_inputs (int): The number of input units.
             num_hidden (list): A list of integers representing the number of hidden units in each layer.
             num_outputs (int): The number of output units.
             beta (float, optional): The beta value for initializing the leaky integrate and fire model. Defaults to 0.75.
+            segment_length (int, optional): The number of time bins per segment. Defaults to 20.
+            out_proj (bool, optional): Whether to include an output layer. Defaults to True.
         """
         super().__init__()
+        self.has_out_proj = out_proj
         # Initialized the CLAPP layers with shapes from num_hidden
         self.clapp = torch.nn.ModuleList([CLAPP_layer_segmented(num_inputs, num_hidden[0], beta)])
         for idx_hidden in range(1, len(num_hidden)):
@@ -72,7 +78,8 @@ class CLAPP_Sequence_SNN(nn.Module):
                                           num_hidden[idx_hidden], beta))
 
         # initialize output layer
-        self.out_proj = CLAPP_out(num_hidden[-1], num_outputs, beta)#nn.Linear(num_hidden[-1], num_outputs)
+        if self.has_out_proj:
+            self.out_proj = CLAPP_out(num_hidden[-1], num_outputs, beta)#nn.Linear(num_hidden[-1], num_outputs)
         self.segment_length = segment_length
     
     def reset(self):
@@ -92,7 +99,10 @@ class CLAPP_Sequence_SNN(nn.Module):
                 losses[idx] = loss
             # Final output projection
             self.hidden_state = clapp_in
-            out_spk, out_mem = self.out_proj(clapp_in, target)
+            if self.has_out_proj:
+                out_spk, out_mem = self.out_proj(clapp_in, target)
+            else:
+                out_spk = clapp_in
 
 
         return out_spk, torch.stack(mems), losses
@@ -179,11 +189,17 @@ class CLAPP_layer_segmented(nn.Module):
                     else:
                         dW_pred -= torch.outer(self.negative_spk_trace, self.prev_spk_trace)
                 if dW_pred is not None:
-                    self.pred.weight.grad = - dW_pred
+                    if self.pred.weight.grad is None:
+                        self.pred.weight.grad = - dW_pred
+                    else:
+                        self.pred.weight.grad -= dW_pred
                 # second part of forward weight update
                 # dW += torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace), self.prev_inp_trace)
                 if dW is not None:
-                    self.fc.weight.grad = -dW
+                    if self.fc.weight.grad is None:
+                        self.fc.weight.grad = - dW
+                    else:
+                        self.fc.weight.grad -= dW
         elif event == 'evaluate' and self.prediction is not None:
             loss = self.CLAPP_loss(1, self.spk_trace)
         return spk, self.prev_spk_trace if self.spk_trace == None else self.spk_trace, (loss + loss_contrastive) / 2
@@ -219,7 +235,7 @@ class CLAPP_layer(nn.Module):
     def reset(self):
         self.mem = self.lif.init_leaky()
         if self.spk_trace is not None:
-            self.feedback = self.pred(self.spk_trace)
+            self.feedback = torch.where(self.spk_trace > 0, self.spk_trace, -0.1) #self.pred(self.spk_trace)
             self.prev_spk_trace = self.spk_trace
             self.prev_inp_trace = self.inp_trace
             self.spk_trace = None
@@ -230,7 +246,8 @@ class CLAPP_layer(nn.Module):
 
     @staticmethod
     def _surrogate(x):
-        return 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
+        # surr = 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
+        return torch.heaviside(x, torch.zeros_like(x))
 
     def _update_trace(self, trace, spk):
         # non decaying trace for static data
@@ -257,7 +274,7 @@ class CLAPP_layer(nn.Module):
                 loss = self.CLAPP_loss(bf, self.spk_trace)
             if bf != 0 and self._dL(loss) and self.prev_spk_trace is not None:
                 # update the weights according to CLAPP learning rule
-                retrodiction = nn.functional.linear(self.spk_trace, self.pred.weight.T)  #  self.retro(spk)
+                retrodiction = torch.where(self.spk_trace > 0, self.spk_trace, -0.1)# nn.functional.linear(self.spk_trace, self.pred.weight.T)  #  self.retro(spk)
                 # first part Forward weights update
                 dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.spk_trace), self.inp_trace)
                 # prediction and retrodiction weight update

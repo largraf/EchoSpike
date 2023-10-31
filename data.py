@@ -54,7 +54,7 @@ class classwise_loader():
         self.idx_per_target[target] = 0
     
     def next_item(self, target: int, contrastive=False):
-        if contrastive:
+        if contrastive or target == -1:
             if target == -1:
                 target = torch.randint(0, self.num_classes, (1,)).item()
             else:
