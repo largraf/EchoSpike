@@ -85,24 +85,26 @@ class CLAPP_Sequence_SNN(nn.Module):
     def reset(self):
         for clapp_layer in self.clapp:
             clapp_layer.reset()
-        self.out_proj.reset()
+        if self.has_out_proj:
+            self.out_proj.reset()
 
     def forward(self, inp, target, bf: int, freeze: list=[]):
         with torch.no_grad():
             mems = len(self.clapp)*[None]
             losses = torch.zeros(len(self.clapp))
             clapp_in = inp
+            out_spk = []
             for idx, clapp_layer in enumerate(self.clapp):
                 factor = bf if not idx in freeze else 0
                 clapp_in, mem, loss = clapp_layer(clapp_in, factor)
                 mems[idx] = mem
                 losses[idx] = loss
+                out_spk.append(clapp_in)
             # Final output projection
             self.hidden_state = clapp_in
             if self.has_out_proj:
-                out_spk, out_mem = self.out_proj(clapp_in, target)
-            else:
-                out_spk = clapp_in
+                clapp_in, out_mem = self.out_proj(clapp_in, target)
+            out_spk.append(clapp_in)
 
 
         return out_spk, torch.stack(mems), losses

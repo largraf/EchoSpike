@@ -81,24 +81,18 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
             - target_list (list): A list of the target values.
     """
     torch.set_grad_enabled(False)
-    loss_hist = []
     clapp_loss_hist = []
-    loss_fn = SF.ce_count_loss()
     # training loop
-    optimizer_clapp = torch.optim.Adamax([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp] +
-                                       [{"params": par.pred.parameters(), 'lr': 1e-4} for par in net.clapp])
+    optimizer_clapp = torch.optim.Adamax([{"params":par.fc.parameters(), 'lr': 2e-4} for par in net.clapp] +
+                                       [{"params": par.pred.parameters(), 'lr': 2e-4} for par in net.clapp])
     optimizer_clapp.zero_grad()
-    #optimizer_out = torch.optim.Adamax(net.out_proj.parameters(), lr=1e-4)
     net.train()
-    target_list = []
     target = torch.randint(trainloader.num_classes, (1,)).item()
     while True:
         # Choose the next random target that is different from current target
         data, target = trainloader.next_item(int(target), contrastive=True)
         net.reset()
         data = data.squeeze(0).float().to(device)
-        logits_per_step = []
-        target_list.append(target)
         target = target.to(device)
         predict_segment = torch.randint(data.shape[0]//segment_size - 1, (1,)).item() + 1
 
@@ -109,8 +103,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
                 event = 'evaluate'
             else:
                 event = None
-            out_spk, _, clapp_loss = net(data[step].flatten(), target, event)
-            logits_per_step.append(out_spk)
+            _, _, clapp_loss = net(data[step].flatten(), target, event)
             if event == 'evaluate':
                 clapp_loss_hist.append(clapp_loss)
                 if len(clapp_loss_hist) % batch_size == 0:
@@ -118,16 +111,12 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
                     optimizer_clapp.zero_grad()
                 break
 
-        loss_val = loss_fn(torch.stack(logits_per_step).unsqueeze(1), target.long().unsqueeze(0))
-        # Store loss history for future plotting
-        loss_hist.append(loss_val.item()) 
-
         epoch = len(clapp_loss_hist) // len(trainloader)
         if len(clapp_loss_hist) % 1000 == 0 and len(clapp_loss_hist) > 1:
-            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nTrain Loss: {sum(loss_hist[-1000:])/1000:.2f} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-1000:]).sum(axis=0)/1000}")
+            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-1000:]).sum(axis=0)/1000}")
         if epoch >= epochs:
             break
-    return loss_hist, target_list, torch.stack(clapp_loss_hist)
+    return torch.stack(clapp_loss_hist)
 
 def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_size=1, freeze=0):
     """
