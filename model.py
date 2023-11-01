@@ -104,7 +104,7 @@ class CLAPP_Sequence_SNN(nn.Module):
             self.hidden_state = clapp_in
             if self.has_out_proj:
                 clapp_in, out_mem = self.out_proj(clapp_in, target)
-            out_spk.append(clapp_in)
+                out_spk.append(clapp_in)
 
 
         return out_spk, torch.stack(mems), losses
@@ -132,7 +132,6 @@ class CLAPP_layer_segmented(nn.Module):
         self.mem = self.lif.init_leaky()
         if self.spk_trace is not None:
             self.negative_spk_trace = self.spk_trace
-            self.negative_inp_trace = self.inp_trace
             self.spk_trace = None
             self.inp_trace = None
     
@@ -161,40 +160,36 @@ class CLAPP_layer_segmented(nn.Module):
         self.spk_trace = self._update_trace(self.spk_trace, spk)
         if self.training:
             self.inp_trace = self._update_trace(self.inp_trace, inp)
-            if event == 'predict':
-                self.prediction = self.pred(self.spk_trace)
-                self.prev_spk_trace = self.spk_trace
-                self.prev_inp_trace = self.inp_trace
-                self.spk_trace = None
-                self.inp_trace = None
-            if self.prediction is not None and event == 'evaluate':
-                loss = self.CLAPP_loss(1, self.spk_trace)
-                if self.negative_spk_trace is not None:
-                    loss_contrastive = self.CLAPP_loss(-1, self.negative_spk_trace)
-            if event == 'evaluate':
+            if 'evaluate' in event:
+                if self.prediction is not None:
+                    loss = self.CLAPP_loss(1, self.spk_trace)
+                    if self.negative_spk_trace is not None:
+                        loss_contrastive = self.CLAPP_loss(-1, self.negative_spk_trace)
+
                 # update the weights according to CLAPP learning rule
                 # retrodiction = nn.functional.linear(self.spk_trace, self.pred.weight.T)
                 # first part Forward weights update
                 dW, dW_pred = None, None
                 # predictive
+                surr = CLAPP_layer._surrogate(self.mem + self.spk_trace - 1)
                 if self._dL(loss):
-                    dW = torch.outer(self.prediction * CLAPP_layer._surrogate(self.spk_trace), self.inp_trace)
-                    dW_pred = torch.outer(self.spk_trace, self.prev_spk_trace)
+                    dW = torch.outer(self.prediction * surr, self.inp_trace)
+                    # dW_pred = torch.outer(self.spk_trace, self.prev_spk_trace)
                 # contrastive
                 if self.negative_spk_trace is not None and self._dL(loss_contrastive):
                     if dW is None:
-                        dW = -torch.outer(self.prediction * CLAPP_layer._surrogate(self.negative_spk_trace), self.negative_inp_trace)
+                        dW = -torch.outer(self.negative_spk_trace * surr, self.inp_trace)
                     else:
-                        dW -= torch.outer(self.prediction * CLAPP_layer._surrogate(self.negative_spk_trace), self.negative_inp_trace)
-                    if dW_pred is None:
-                        dW_pred = -torch.outer(self.negative_spk_trace, self.prev_spk_trace)
-                    else:
-                        dW_pred -= torch.outer(self.negative_spk_trace, self.prev_spk_trace)
-                if dW_pred is not None:
-                    if self.pred.weight.grad is None:
-                        self.pred.weight.grad = - dW_pred
-                    else:
-                        self.pred.weight.grad -= dW_pred
+                        dW -= torch.outer(self.negative_spk_trace * surr, self.inp_trace)
+                    # if dW_pred is None:
+                    #     dW_pred = -torch.outer(self.negative_spk_trace, self.prev_spk_trace)
+                    # else:
+                    #     dW_pred -= torch.outer(self.negative_spk_trace, self.prev_spk_trace)
+                # if dW_pred is not None:
+                #     if self.pred.weight.grad is None:
+                #         self.pred.weight.grad = - dW_pred
+                #     else:
+                #         self.pred.weight.grad -= dW_pred
                 # second part of forward weight update
                 # dW += torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace), self.prev_inp_trace)
                 if dW is not None:
@@ -202,6 +197,12 @@ class CLAPP_layer_segmented(nn.Module):
                         self.fc.weight.grad = - dW
                     else:
                         self.fc.weight.grad -= dW
+            if 'predict' in event:
+                self.prediction = torch.where(self.spk_trace > 0, self.spk_trace, -0.1)#self.spk_trace  #self.pred(self.spk_trace)
+                self.prev_spk_trace = self.spk_trace
+                self.prev_inp_trace = self.inp_trace
+                self.spk_trace = None
+                self.inp_trace = None
         elif event == 'evaluate' and self.prediction is not None:
             loss = self.CLAPP_loss(1, self.spk_trace)
         return spk, self.prev_spk_trace if self.spk_trace == None else self.spk_trace, (loss + loss_contrastive) / 2

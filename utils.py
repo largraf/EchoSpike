@@ -94,22 +94,24 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
         net.reset()
         data = data.squeeze(0).float().to(device)
         target = target.to(device)
-        predict_segment = torch.randint(data.shape[0]//segment_size - 1, (1,)).item() + 1
+        # predict_segment = torch.randint(data.shape[0]//segment_size - 1, (1,)).item() + 1
 
         for step in range(data.shape[0]):
-            if step == segment_size * (predict_segment-1) - 1:
+            if step == segment_size -1: #* (predict_segment-1) - 1:
                 event = 'predict'
-            elif step == segment_size * predict_segment - 1:
+            elif step == data.shape[0] - 1:
                 event = 'evaluate'
+            elif step % segment_size == segment_size - 1:#step == segment_size * predict_segment - 1:
+                event = 'predict_evaluate'
             else:
-                event = None
+                event = ''
             _, _, clapp_loss = net(data[step].flatten(), target, event)
-            if event == 'evaluate':
+            if 'evaluate' in event:
                 clapp_loss_hist.append(clapp_loss)
                 if len(clapp_loss_hist) % batch_size == 0:
                     optimizer_clapp.step()
                     optimizer_clapp.zero_grad()
-                break
+                #break
 
         epoch = len(clapp_loss_hist) // len(trainloader)
         if len(clapp_loss_hist) % 1000 == 0 and len(clapp_loss_hist) > 1:
@@ -245,11 +247,11 @@ def test_sample_wise(net, testloader, device):
             loss_list.append(loss)
     return torch.stack(loss_list), loss_per_class, mem_history, target_list, clapp_losses
 
-def test_SHD(net, testloader, device):
+def test_classwise(net, testloader, device):
     torch.set_grad_enabled(False)
     loss_per_class = testloader.num_classes*[0]
     net.eval()
-    mem_history = []
+    spk_history = []
     target_list = []
     loss_list = []
     clapp_losses = []
@@ -269,10 +271,10 @@ def test_SHD(net, testloader, device):
             factor = bf if step == data.shape[0]-1 else 0
             out_spk, activations, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device))
             logit_list.append(out_spk[-1])
-            activation_list.append(activations)
+            activation_list.append(torch.stack(out_spk))
             if factor != 0:
                 clapp_losses.append(clapp_loss)
-        mem_history.append(torch.stack(activation_list).sum(axis=0))
+        spk_history.append(torch.stack(activation_list).sum(axis=0))
         coin_flip = torch.rand(1) > 0.5
         if coin_flip:
             bf = -1
@@ -287,6 +289,46 @@ def test_SHD(net, testloader, device):
         loss_per_class[target.long()] += loss
         loss_list.append(loss)
         if len(loss_list) > len(testloader):
+            break
+    if net.has_out_proj:
+        print(f'Accuracy: {100*sum(true_false)/len(true_false):.2f}%')
+    return torch.stack(loss_list), loss_per_class, spk_history, target_list, clapp_losses
+
+
+def test_SHD(net, testloader, device):
+    torch.set_grad_enabled(False)
+    loss_per_class = testloader.num_classes*[0]
+    net.eval()
+    mem_history = []
+    target_list = []
+    loss_list = []
+    clapp_losses = []
+    true_false = []
+
+    bf = 0
+    target = torch.randint(testloader.num_classes, (1,)).item()
+    while True:
+        data, target = testloader.next_item(int(target), contrastive=True)
+        target_list.append(target)
+        net.reset()
+        data = data.squeeze(0).float().to(device)
+        target = target.to(device)
+        logit_list = []
+        activation_list = []
+        for step in range(data.shape[0]):
+            out_spk, activations, clapp_loss = net(data[step].flatten(), target, torch.tensor(bf, device=device))
+            logit_list.append(out_spk[-1])
+            activation_list.append(torch.stack(out_spk))
+        mem_history.append(torch.stack(activation_list).sum(axis=0))
+        pred = torch.stack(logit_list).sum(axis=0)
+        prediction = torch.argmax(pred)
+        if prediction.sum() > 0:
+            pass
+        true_false.append(prediction == target.squeeze())
+        loss = torch.nn.functional.cross_entropy(pred, target.squeeze().long())
+        loss_per_class[target.long()] += loss
+        loss_list.append(loss)
+        if len(loss_list) > 500:#len(testloader):
             break
     if net.has_out_proj:
         print(f'Accuracy: {100*sum(true_false)/len(true_false):.2f}%')
