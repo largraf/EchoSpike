@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import snntorch as snn
+from collections import deque
 
 
 class CLAPP_SNN(nn.Module):
@@ -71,10 +72,12 @@ class CLAPP_Sequence_SNN(nn.Module):
         """
         super().__init__()
         self.has_out_proj = out_proj
+        layer_type = CLAPP_layer_bio
+        # layer_type = CLAPP_layer_segmented
         # Initialized the CLAPP layers with shapes from num_hidden
-        self.clapp = torch.nn.ModuleList([CLAPP_layer_segmented(num_inputs, num_hidden[0], beta)])
+        self.clapp = torch.nn.ModuleList([layer_type(num_inputs, num_hidden[0], beta)])
         for idx_hidden in range(1, len(num_hidden)):
-            self.clapp.append(CLAPP_layer_segmented(num_hidden[idx_hidden-1],
+            self.clapp.append(layer_type(num_hidden[idx_hidden-1],
                                           num_hidden[idx_hidden], beta))
 
         # initialize output layer
@@ -116,8 +119,8 @@ class CLAPP_layer_bio(nn.Module):
         self.fc = nn.Linear(num_inputs, num_hidden, bias=False)
         with torch.no_grad():
             # too small weights create no spikes at all -> no learning
-            self.fc.weight *= 5
-        self.lif = snn.Leaky(beta=beta, reset_mechanism='zero')
+            self.fc.weight *= 4
+        self.lif = snn.Leaky(beta=beta) #), reset_mechanism='zero')
         # Recursive feedback
         self.feedback_trace = None
         self.pred = None
@@ -125,20 +128,26 @@ class CLAPP_layer_bio(nn.Module):
         self.inp_trace = None
         self.negative_spk_trace = None
         self.trace_decay = beta
+        predict_steps = 20
+        self.feedback_trace_delay = deque([torch.zeros(num_hidden) for _ in range(predict_steps)], maxlen=predict_steps)
         self.reset()
 
     def reset(self):
         self.mem = self.lif.init_leaky()
         self.feedback_trace = None
-        self.negative_spk_trace = None if self.spk_trace is None else self.spk_trace / 10.
+        if self.spk_trace is not None:
+            self.negative_spk_trace = self.spk_trace / 10.
+        else:
+            self.negative_spk_trace = None
         self.spk_trace = None
         self.inp_trace = None
     
-    def CLAPP_loss(self, bf, current):
+    def CLAPP_loss(self, bf, current, inp):
         if bf == 1:
-            return torch.relu(1 - (current * self.feedback_trace).sum())
+            # inp.sum() should ensure that the number of spikes doesn't decay with depth
+            return torch.relu(inp.sum() - (current * torch.where(self.feedback_trace > 0, self.feedback_trace, -1.)).sum())
         else:
-            return torch.relu(1 + (current * self.negative_spk_trace).sum())
+            return torch.relu(-inp.sum()/10 + (current * torch.where(self.negative_spk_trace > 0, self.negative_spk_trace, -1.)).sum())
 
 
     @staticmethod
@@ -151,6 +160,13 @@ class CLAPP_layer_bio(nn.Module):
         elif not no_dec:
             return self.trace_decay * trace + spk
         return trace + spk
+    
+    def _update_feedback_trace(self, spk):
+        fb = self.feedback_trace_delay[0]
+        self.feedback_trace_delay.append(spk)
+        if self.feedback_trace is None:
+            return fb
+        return self.trace_decay * self.feedback_trace + spk
      
     def _dL(self, loss) -> bool:
         return loss > 0
@@ -164,15 +180,17 @@ class CLAPP_layer_bio(nn.Module):
         if self.training:
             self.inp_trace = self._update_trace(self.inp_trace, inp)
             if self.feedback_trace is not None:
-                loss = self.CLAPP_loss(1, spk)
+                loss = self.CLAPP_loss(1, spk, inp)
                 if self.negative_spk_trace is not None:
-                    loss_contrastive = self.CLAPP_loss(-1, spk)
+                    loss_contrastive = self.CLAPP_loss(-1, spk, inp)
 
-            dW = None 
+            dW = None
             # predictive update
-            surr = CLAPP_layer._surrogate(self.mem + cur - 1)
+            surr = CLAPP_layer_bio._surrogate(self.mem + cur - 1)
             if self._dL(loss):
                 dW = torch.outer(self.feedback_trace * surr, self.inp_trace)
+            elif self.feedback_trace is not None:
+                self.feedback_trace *= 1
             
             # contrastive update
             if self.negative_spk_trace is not None and self._dL(loss_contrastive):
@@ -180,6 +198,8 @@ class CLAPP_layer_bio(nn.Module):
                     dW = -torch.outer(self.negative_spk_trace * surr, self.inp_trace)
                 else:
                     dW -= torch.outer(self.negative_spk_trace * surr, self.inp_trace)
+            elif self.feedback_trace is not None and spk.sum()>10:
+                self.feedback_trace *= 1
             
             
             if dW is not None:
@@ -189,7 +209,7 @@ class CLAPP_layer_bio(nn.Module):
                     self.fc.weight.grad -= dW
 
             # update feedback
-            self.feedback_trace = self._update_trace(self.feedback_trace, spk)
+            self.feedback_trace = self._update_feedback_trace(spk)
         elif self.feedback_trace is not None:
             loss = self.CLAPP_loss(1, self.spk_trace)
         return spk, spk if self.spk_trace is None else self.spk_trace, (loss + loss_contrastive) / 2
@@ -203,7 +223,7 @@ class CLAPP_layer_segmented(nn.Module):
         with torch.no_grad():
             # too small weights create no spikes at all -> no learning
             self.fc.weight *= 8
-        self.lif = snn.Leaky(beta=beta, reset_mechanism='zero')
+        self.lif = snn.Leaky(beta=beta) #, reset_mechanism='zero')
         # Recursive feedback
         self.prediction = None
         self.inp_trace, self.spk_trace = None, None
@@ -256,7 +276,7 @@ class CLAPP_layer_segmented(nn.Module):
                 # first part Forward weights update
                 dW, dW_pred = None, None
                 # predictive
-                surr = CLAPP_layer._surrogate(self.mem + self.spk_trace - 1)
+                surr = CLAPP_layer_segmented._surrogate(self.mem + cur - 1)
                 if loss > 20: #self._dL(loss):
                     dW = torch.outer((self.prediction-self.spk_trace) * surr, self.inp_trace)
                     # dW_pred = torch.outer(self.spk_trace, self.prev_spk_trace)
@@ -387,7 +407,7 @@ class CLAPP_out(nn.Module):
         super().__init__()
         # feed forward part
         self.out_proj = nn.Linear(num_inputs, num_out, bias=False)
-        self.lif = snn.Leaky(beta=beta, reset_mechanism='zero')
+        self.lif = snn.Leaky(beta=beta)#, reset_mechanism='zero')
         self.num_out = num_out
         self.reset()
 

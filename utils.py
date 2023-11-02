@@ -83,10 +83,12 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
     torch.set_grad_enabled(False)
     clapp_loss_hist = []
     # training loop
-    optimizer_clapp = torch.optim.Adamax([{"params":par.fc.parameters(), 'lr': 2e-4} for par in net.clapp])
+    print_interval = 500
+    optimizer_clapp = torch.optim.Adamax([{"params":par.fc.parameters(), 'lr': 1e-4} for par in net.clapp])
                                        #[{"params": par.pred.parameters(), 'lr': 2e-4} for par in net.clapp])
     optimizer_clapp.zero_grad()
     net.train()
+    spks = torch.zeros(len(net.clapp)+1)
     target = torch.randint(trainloader.num_classes, (1,)).item()
     while True:
         # Choose the next random target that is different from current target
@@ -105,18 +107,22 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
                 event = 'predict_evaluate'
             else:
                 event = ''
-            _, _, clapp_loss = net(data[step].flatten(), target, event, freeze)
+            spk, _, clapp_loss = net(data[step].flatten(), target, event, freeze)
             cl += clapp_loss
+            spks += torch.stack([data[step].mean(), *[sp.mean() for sp in spk]])
             if 'evaluate' == event:
                 clapp_loss_hist.append(cl/100)
                 if len(clapp_loss_hist) % batch_size == 0:
                     optimizer_clapp.step()
+                    # print(f'Mean grad: {net.clapp[0].fc.weight.grad.mean()}, {net.clapp[1].fc.weight.grad.mean()}')
                     optimizer_clapp.zero_grad()
                 #break
 
         epoch = len(clapp_loss_hist) // len(trainloader)
-        if len(clapp_loss_hist) % 1000 == 0 and len(clapp_loss_hist) > 1:
-            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-1000:]).sum(axis=0)/1000}")
+        if len(clapp_loss_hist) % print_interval == 0 and len(clapp_loss_hist) > 1:
+            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-print_interval:]).mean(axis=0)}")
+            print(f"Spks: {spks/print_interval}")
+            spks = torch.zeros(len(net.clapp)+1)
         if epoch >= epochs:
             break
     return torch.stack(clapp_loss_hist)
