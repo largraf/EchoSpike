@@ -109,6 +109,91 @@ class CLAPP_Sequence_SNN(nn.Module):
 
         return out_spk, torch.stack(mems), losses
 
+class CLAPP_layer_bio(nn.Module):
+    def __init__(self, num_inputs, num_hidden, beta):
+        super().__init__()
+        # feed forward part
+        self.fc = nn.Linear(num_inputs, num_hidden, bias=False)
+        with torch.no_grad():
+            # too small weights create no spikes at all -> no learning
+            self.fc.weight *= 5
+        self.lif = snn.Leaky(beta=beta, reset_mechanism='zero')
+        # Recursive feedback
+        self.feedback_trace = None
+        self.pred = None
+        self.spk_trace = None
+        self.inp_trace = None
+        self.negative_spk_trace = None
+        self.trace_decay = beta
+        self.reset()
+
+    def reset(self):
+        self.mem = self.lif.init_leaky()
+        self.feedback_trace = None
+        self.negative_spk_trace = None if self.spk_trace is None else self.spk_trace / 10.
+        self.spk_trace = None
+        self.inp_trace = None
+    
+    def CLAPP_loss(self, bf, current):
+        if bf == 1:
+            return torch.relu(1 - (current * self.feedback_trace).sum())
+        else:
+            return torch.relu(1 + (current * self.negative_spk_trace).sum())
+
+
+    @staticmethod
+    def _surrogate(x):
+        return 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
+
+    def _update_trace(self, trace, spk, no_dec=False):
+        if trace is None:
+            return spk
+        elif not no_dec:
+            return self.trace_decay * trace + spk
+        return trace + spk
+     
+    def _dL(self, loss) -> bool:
+        return loss > 0
+
+    def forward(self, inp, event):
+        cur = self.fc(inp)
+        spk, self.mem = self.lif(cur, self.mem)
+
+        loss, loss_contrastive = 0, 0
+        self.spk_trace = self._update_trace(self.spk_trace, spk, no_dec=True)
+        if self.training:
+            self.inp_trace = self._update_trace(self.inp_trace, inp)
+            if self.feedback_trace is not None:
+                loss = self.CLAPP_loss(1, spk)
+                if self.negative_spk_trace is not None:
+                    loss_contrastive = self.CLAPP_loss(-1, spk)
+
+            dW = None 
+            # predictive update
+            surr = CLAPP_layer._surrogate(self.mem + cur - 1)
+            if self._dL(loss):
+                dW = torch.outer(self.feedback_trace * surr, self.inp_trace)
+            
+            # contrastive update
+            if self.negative_spk_trace is not None and self._dL(loss_contrastive):
+                if dW is None:
+                    dW = -torch.outer(self.negative_spk_trace * surr, self.inp_trace)
+                else:
+                    dW -= torch.outer(self.negative_spk_trace * surr, self.inp_trace)
+            
+            
+            if dW is not None:
+                if self.fc.weight.grad is None:
+                    self.fc.weight.grad = - dW
+                else:
+                    self.fc.weight.grad -= dW
+
+            # update feedback
+            self.feedback_trace = self._update_trace(self.feedback_trace, spk)
+        elif self.feedback_trace is not None:
+            loss = self.CLAPP_loss(1, self.spk_trace)
+        return spk, spk if self.spk_trace is None else self.spk_trace, (loss + loss_contrastive) / 2
+
 
 class CLAPP_layer_segmented(nn.Module):
     def __init__(self, num_inputs, num_hidden, beta):
@@ -176,7 +261,7 @@ class CLAPP_layer_segmented(nn.Module):
                     dW = torch.outer((self.prediction-self.spk_trace) * surr, self.inp_trace)
                     # dW_pred = torch.outer(self.spk_trace, self.prev_spk_trace)
                 # contrastive
-                if self.negative_spk_trace is not None and loss_contrastive > -200: #self._dL(loss_contrastive):
+                if self.negative_spk_trace is not None and loss_contrastive > -100: #self._dL(loss_contrastive):
                     if dW is None:
                         dW = -torch.outer((self.negative_spk_trace-self.spk_trace) * surr, self.inp_trace)
                     else:

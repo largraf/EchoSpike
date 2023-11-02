@@ -64,7 +64,7 @@ def train(net, trainloader, epochs, device):
             prev_target = targets.cpu()
     return loss_hist, target_list, torch.stack(clapp_loss_hist)
 
-def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch_size=1, freeze=0):
+def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch_size=1, freeze=[]):
     """
     Trains a SNN.
 
@@ -83,8 +83,8 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
     torch.set_grad_enabled(False)
     clapp_loss_hist = []
     # training loop
-    optimizer_clapp = torch.optim.Adamax([{"params":par.fc.parameters(), 'lr': 2e-4} for par in net.clapp] +
-                                       [{"params": par.pred.parameters(), 'lr': 2e-4} for par in net.clapp])
+    optimizer_clapp = torch.optim.Adamax([{"params":par.fc.parameters(), 'lr': 2e-4} for par in net.clapp])
+                                       #[{"params": par.pred.parameters(), 'lr': 2e-4} for par in net.clapp])
     optimizer_clapp.zero_grad()
     net.train()
     target = torch.randint(trainloader.num_classes, (1,)).item()
@@ -95,7 +95,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
         data = data.squeeze(0).float().to(device)
         target = target.to(device)
         # predict_segment = torch.randint(data.shape[0]//segment_size - 1, (1,)).item() + 1
-
+        cl = torch.zeros(len(net.clapp))
         for step in range(data.shape[0]):
             if step == segment_size -1: #* (predict_segment-1) - 1:
                 event = 'predict'
@@ -105,9 +105,10 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
                 event = 'predict_evaluate'
             else:
                 event = ''
-            _, _, clapp_loss = net(data[step].flatten(), target, event)
-            if 'evaluate' in event:
-                clapp_loss_hist.append(clapp_loss)
+            _, _, clapp_loss = net(data[step].flatten(), target, event, freeze)
+            cl += clapp_loss
+            if 'evaluate' == event:
+                clapp_loss_hist.append(cl/100)
                 if len(clapp_loss_hist) % batch_size == 0:
                     optimizer_clapp.step()
                     optimizer_clapp.zero_grad()
@@ -120,7 +121,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
             break
     return torch.stack(clapp_loss_hist)
 
-def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_size=1, freeze=0):
+def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[]):
     """
     Trains a SNN.
 
@@ -156,7 +157,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
 
         for step in range(data.shape[0]):
             factor = bf if step == data.shape[0]-1 else 0
-            _, _, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device))
+            _, _, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device), freeze)
             if factor != 0:
                 clapp_loss_hist.append(clapp_loss)
                 if len(clapp_loss_hist) % batch_size == 0:
@@ -328,7 +329,7 @@ def test_SHD(net, testloader, device):
         loss = torch.nn.functional.cross_entropy(pred, target.squeeze().long())
         loss_per_class[target.long()] += loss
         loss_list.append(loss)
-        if len(loss_list) > 500:#len(testloader):
+        if len(loss_list) > len(testloader):
             break
     if net.has_out_proj:
         print(f'Accuracy: {100*sum(true_false)/len(true_false):.2f}%')
