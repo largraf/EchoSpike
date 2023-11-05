@@ -84,7 +84,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
     clapp_loss_hist = []
     # training loop
     print_interval = 500
-    optimizer_clapp = torch.optim.Adamax([{"params":par.fc.parameters(), 'lr': 1e-4} for par in net.clapp])
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-4} for par in net.clapp])
                                        #[{"params": par.pred.parameters(), 'lr': 2e-4} for par in net.clapp])
     optimizer_clapp.zero_grad()
     net.train()
@@ -114,7 +114,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
                 clapp_loss_hist.append(cl/100)
                 if len(clapp_loss_hist) % batch_size == 0:
                     optimizer_clapp.step()
-                    # print(f'Mean grad: {net.clapp[0].fc.weight.grad.mean()}, {net.clapp[1].fc.weight.grad.mean()}')
+                    # print(f'Mean grad: {net.clapp[0].fc.weight.grad.mean()}, {net.clapp[1].fc.weight.grad.mean()}, {net.clapp[2].fc.weight.grad.mean()}')
                     optimizer_clapp.zero_grad()
                 #break
 

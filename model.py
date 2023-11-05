@@ -136,7 +136,8 @@ class CLAPP_layer_bio(nn.Module):
         self.mem = self.lif.init_leaky()
         self.feedback_trace = None
         if self.spk_trace is not None:
-            self.negative_spk_trace = self.spk_trace / 10.
+            self.negative_spk_trace = self.spk_trace / self.spk_trace.mean()
+            #self.negative_spk_trace = self.negative_spk_trace
         else:
             self.negative_spk_trace = None
         self.spk_trace = None
@@ -145,9 +146,10 @@ class CLAPP_layer_bio(nn.Module):
     def CLAPP_loss(self, bf, current, inp):
         if bf == 1:
             # inp.sum() should ensure that the number of spikes doesn't decay with depth
-            return torch.relu(inp.sum() - (current * torch.where(self.feedback_trace > 0, self.feedback_trace, -1.)).sum())
+            fb = self.feedback_trace/self.feedback_trace.mean() -1
+            return torch.relu(inp.sum() - (current * fb).sum())
         else:
-            return torch.relu(-inp.sum()/10 + (current * torch.where(self.negative_spk_trace > 0, self.negative_spk_trace, -1.)).sum())
+            return torch.relu(-inp.sum()/5 + (current * (self.negative_spk_trace-1)).sum())
 
 
     @staticmethod
@@ -166,7 +168,7 @@ class CLAPP_layer_bio(nn.Module):
         self.feedback_trace_delay.append(spk)
         if self.feedback_trace is None:
             return fb
-        return self.trace_decay * self.feedback_trace + spk
+        return self.trace_decay * self.feedback_trace + fb
      
     def _dL(self, loss) -> bool:
         return loss > 0
@@ -186,18 +188,20 @@ class CLAPP_layer_bio(nn.Module):
 
             dW = None
             # predictive update
-            surr = CLAPP_layer_bio._surrogate(self.mem + cur - 1)
-            if self._dL(loss):
-                dW = torch.outer(self.feedback_trace * surr, self.inp_trace)
-            elif self.feedback_trace is not None:
+            surr = CLAPP_layer_bio._surrogate(self.mem - 1)
+            if self._dL(loss) and self.feedback_trace.sum() > 0:
+                fb = self.feedback_trace / self.feedback_trace.mean() - 0.1
+                dW = torch.outer(fb * surr, self.inp_trace)
+            elif self.feedback_trace is not None and spk.sum()>10:
                 self.feedback_trace *= 1
             
             # contrastive update
             if self.negative_spk_trace is not None and self._dL(loss_contrastive):
-                if dW is None:
-                    dW = -torch.outer(self.negative_spk_trace * surr, self.inp_trace)
+                dW_2 = torch.outer((self.negative_spk_trace-0.1) * surr, self.inp_trace)
+                if dW is not None:
+                    dW -= dW_2
                 else:
-                    dW -= torch.outer(self.negative_spk_trace * surr, self.inp_trace)
+                    dW = -dW_2
             elif self.feedback_trace is not None and spk.sum()>10:
                 self.feedback_trace *= 1
             
@@ -276,7 +280,7 @@ class CLAPP_layer_segmented(nn.Module):
                 # first part Forward weights update
                 dW, dW_pred = None, None
                 # predictive
-                surr = CLAPP_layer_segmented._surrogate(self.mem + cur - 1)
+                surr = CLAPP_layer_segmented._surrogate(self.mem - 1)
                 if loss > 20: #self._dL(loss):
                     dW = torch.outer((self.prediction-self.spk_trace) * surr, self.inp_trace)
                     # dW_pred = torch.outer(self.spk_trace, self.prev_spk_trace)
@@ -416,7 +420,7 @@ class CLAPP_out(nn.Module):
     
     def _dL(self, loss):
         return loss > 0
-
+    
     def _surrogate(self, x):
         return 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
 
@@ -426,7 +430,7 @@ class CLAPP_out(nn.Module):
         if self.training:
             # prediction weight update
             target_spk = nn.functional.one_hot(target.long(), num_classes=self.num_out).flatten().float()
-            dW = torch.outer((target_spk - spk) * self._surrogate(cur-1), inp)
+            dW = torch.outer((target_spk - spk) * self._surrogate(self.mem -1), inp)
             if self.out_proj.weight.grad is not None:
                 self.out_proj.weight.grad -= dW
             else:
