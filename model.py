@@ -75,7 +75,7 @@ class CLAPP_Sequence_SNN(nn.Module):
         layer_type = CLAPP_layer_bio
         # layer_type = CLAPP_layer_segmented
         # Initialized the CLAPP layers with shapes from num_hidden
-        self.clapp = torch.nn.ModuleList([layer_type(num_inputs, num_hidden[0], beta)])
+        self.clapp = torch.nn.ModuleList([layer_type(num_inputs+num_hidden[2], num_hidden[0], beta)])
         for idx_hidden in range(1, len(num_hidden)):
             self.clapp.append(layer_type(num_hidden[idx_hidden-1],
                                           num_hidden[idx_hidden], beta))
@@ -84,18 +84,20 @@ class CLAPP_Sequence_SNN(nn.Module):
         if self.has_out_proj:
             self.out_proj = CLAPP_out(num_hidden[-1], num_outputs, beta)#nn.Linear(num_hidden[-1], num_outputs)
         self.segment_length = segment_length
+        self.hidden_state = torch.zeros(num_hidden[2])
     
     def reset(self):
         for clapp_layer in self.clapp:
             clapp_layer.reset()
         if self.has_out_proj:
             self.out_proj.reset()
+        self.hidden_state = torch.zeros_like(self.hidden_state)
 
     def forward(self, inp, target, bf: int, freeze: list=[]):
         with torch.no_grad():
             mems = len(self.clapp)*[None]
             losses = torch.zeros(len(self.clapp))
-            clapp_in = inp
+            clapp_in = torch.cat((inp, self.hidden_state))
             out_spk = []
             for idx, clapp_layer in enumerate(self.clapp):
                 factor = bf if not idx in freeze else ''
@@ -130,14 +132,16 @@ class CLAPP_layer_bio(nn.Module):
         self.trace_decay = beta
         predict_steps = 20
         self.feedback_trace_delay = deque([torch.zeros(num_hidden) for _ in range(predict_steps)], maxlen=predict_steps)
+        self.cvp = [0, 0, 0, 0]
         self.reset()
 
     def reset(self):
         self.mem = self.lif.init_leaky()
         self.feedback_trace = None
         if self.spk_trace is not None:
-            self.negative_spk_trace = self.spk_trace / self.spk_trace.mean()
-            #self.negative_spk_trace = self.negative_spk_trace
+            self.negative_spk_trace = (self.spk_trace - self.spk_trace.mean())/15
+            # if self.spk_trace.sum() == 0:
+            #     self.negative_spk_trace = self.spk_trace
         else:
             self.negative_spk_trace = None
         self.spk_trace = None
@@ -146,10 +150,12 @@ class CLAPP_layer_bio(nn.Module):
     def CLAPP_loss(self, bf, current, inp):
         if bf == 1:
             # inp.sum() should ensure that the number of spikes doesn't decay with depth
-            fb = self.feedback_trace/self.feedback_trace.mean() -1
-            return torch.relu(inp.sum() - (current * fb).sum())
+            if self.feedback_trace.sum() > 0:
+                fb = self.feedback_trace - self.feedback_trace.mean()
+                return torch.relu(inp.sum() - (current * fb).sum())
+            else: return 0
         else:
-            return torch.relu(-inp.sum()/5 + (current * (self.negative_spk_trace-1)).sum())
+            return torch.relu((current * self.negative_spk_trace).sum())
 
 
     @staticmethod
@@ -189,15 +195,19 @@ class CLAPP_layer_bio(nn.Module):
             dW = None
             # predictive update
             surr = CLAPP_layer_bio._surrogate(self.mem - 1)
-            if self._dL(loss) and self.feedback_trace.sum() > 0:
-                fb = self.feedback_trace / self.feedback_trace.mean() - 0.1
+            if self._dL(loss) and self.feedback_trace.sum() > 0 and self.inp_trace.sum() > 0:
+                fb = self.feedback_trace - 0.5*self.feedback_trace.mean()
                 dW = torch.outer(fb * surr, self.inp_trace)
+                self.cvp[0] += 1
+                self.cvp[1] += dW.mean()
             elif self.feedback_trace is not None and spk.sum()>10:
                 self.feedback_trace *= 1
             
             # contrastive update
-            if self.negative_spk_trace is not None and self._dL(loss_contrastive):
-                dW_2 = torch.outer((self.negative_spk_trace-0.1) * surr, self.inp_trace)
+            if self.negative_spk_trace is not None and self._dL(loss_contrastive) and self.inp_trace.sum() > 0:
+                dW_2 = torch.outer(self.negative_spk_trace * surr, self.inp_trace)
+                self.cvp[2] += 1
+                self.cvp[3] += dW_2.mean()
                 if dW is not None:
                     dW -= dW_2
                 else:
