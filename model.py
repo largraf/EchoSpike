@@ -56,7 +56,7 @@ class CLAPP_SNN(nn.Module):
         return out_spk, torch.stack(spike_traces), losses
 
 class CLAPP_Sequence_SNN(nn.Module):
-    def __init__(self, num_inputs, num_hidden: list, num_outputs,
+    def __init__(self, num_inputs, num_hidden: list, num_outputs, device='cuda',
                  beta=0.96, segment_length=20, out_proj=True):
         """
         Initializes the CLAPP SNN with the given parameters.
@@ -75,38 +75,40 @@ class CLAPP_Sequence_SNN(nn.Module):
         layer_type = CLAPP_layer_bio
         # layer_type = CLAPP_layer_segmented
         # Initialized the CLAPP layers with shapes from num_hidden
-        self.clapp = torch.nn.ModuleList([layer_type(num_inputs+num_hidden[2], num_hidden[0], beta)])
+        self.clapp = torch.nn.ModuleList([layer_type(num_inputs+num_hidden[0], num_hidden[0], beta, device)])
         for idx_hidden in range(1, len(num_hidden)):
-            self.clapp.append(layer_type(num_hidden[idx_hidden-1],
-                                          num_hidden[idx_hidden], beta))
+            self.clapp.append(layer_type(num_hidden[idx_hidden-1] + num_hidden[idx_hidden],
+                                          num_hidden[idx_hidden], beta, device))
 
         # initialize output layer
         if self.has_out_proj:
             self.out_proj = CLAPP_out(num_hidden[-1], num_outputs, beta)#nn.Linear(num_hidden[-1], num_outputs)
         self.segment_length = segment_length
-        self.hidden_state = torch.zeros(num_hidden[2])
+        self.hidden_state = [torch.zeros(num_hidden[i], device=device) for i in range(len(num_hidden))]
     
     def reset(self):
         for clapp_layer in self.clapp:
             clapp_layer.reset()
         if self.has_out_proj:
             self.out_proj.reset()
-        self.hidden_state = torch.zeros_like(self.hidden_state)
+        self.hidden_state = [torch.zeros_like(self.hidden_state[i], device=self.hidden_state[i].device) for i in range(len(self.hidden_state))]
 
     def forward(self, inp, target, bf: int, freeze: list=[]):
         with torch.no_grad():
             mems = len(self.clapp)*[None]
             losses = torch.zeros(len(self.clapp))
-            clapp_in = torch.cat((inp, self.hidden_state))
+            clapp_in = torch.cat((inp, self.hidden_state[0]))
             out_spk = []
             for idx, clapp_layer in enumerate(self.clapp):
                 factor = bf if not idx in freeze else ''
-                clapp_in, mem, loss = clapp_layer(clapp_in, factor)
+                spk, mem, loss = clapp_layer(clapp_in, factor)
+                if idx < len(self.clapp) - 1:
+                    clapp_in = torch.cat((spk, self.hidden_state[idx+1]))
                 mems[idx] = mem
                 losses[idx] = loss
-                out_spk.append(clapp_in)
+                out_spk.append(spk)
             # Final output projection
-            self.hidden_state = clapp_in
+            self.hidden_state = out_spk
             if self.has_out_proj:
                 clapp_in, out_mem = self.out_proj(clapp_in, target)
                 out_spk.append(clapp_in)
@@ -115,13 +117,14 @@ class CLAPP_Sequence_SNN(nn.Module):
         return out_spk, torch.stack(mems), losses
 
 class CLAPP_layer_bio(nn.Module):
-    def __init__(self, num_inputs, num_hidden, beta):
+    def __init__(self, num_inputs, num_hidden, beta, device):
         super().__init__()
         # feed forward part
         self.fc = nn.Linear(num_inputs, num_hidden, bias=False)
         with torch.no_grad():
             # too small weights create no spikes at all -> no learning
-            self.fc.weight *= 4
+            self.fc.weight *= 3
+            self.fc.weight[:, -num_hidden:] = torch.eye(num_hidden, device=device)
         self.lif = snn.Leaky(beta=beta) #), reset_mechanism='zero')
         # Recursive feedback
         self.feedback_trace = None
@@ -131,7 +134,7 @@ class CLAPP_layer_bio(nn.Module):
         self.negative_spk_trace = None
         self.trace_decay = beta
         predict_steps = 20
-        self.feedback_trace_delay = deque([torch.zeros(num_hidden) for _ in range(predict_steps)], maxlen=predict_steps)
+        self.feedback_trace_delay = deque([torch.zeros(num_hidden, device=device) for _ in range(predict_steps)], maxlen=predict_steps)
         self.cvp = [0, 0, 0, 0]
         self.reset()
 
@@ -139,7 +142,7 @@ class CLAPP_layer_bio(nn.Module):
         self.mem = self.lif.init_leaky()
         self.feedback_trace = None
         if self.spk_trace is not None:
-            self.negative_spk_trace = (self.spk_trace - self.spk_trace.mean())/15
+            self.negative_spk_trace = self.spk_trace/20
             # if self.spk_trace.sum() == 0:
             #     self.negative_spk_trace = self.spk_trace
         else:
@@ -148,14 +151,17 @@ class CLAPP_layer_bio(nn.Module):
         self.inp_trace = None
     
     def CLAPP_loss(self, bf, current, inp):
+        if inp.sum() == 0:
+            return 0
         if bf == 1:
             # inp.sum() should ensure that the number of spikes doesn't decay with depth
             if self.feedback_trace.sum() > 0:
                 fb = self.feedback_trace - self.feedback_trace.mean()
-                return torch.relu(inp.sum() - (current * fb).sum())
+                return torch.relu(50 - (current * fb).sum())
             else: return 0
         else:
-            return torch.relu((current * self.negative_spk_trace).sum())
+            nt = self.negative_spk_trace - self.negative_spk_trace.mean()
+            return torch.relu((current * nt).sum())
 
 
     @staticmethod
@@ -196,12 +202,9 @@ class CLAPP_layer_bio(nn.Module):
             # predictive update
             surr = CLAPP_layer_bio._surrogate(self.mem - 1)
             if self._dL(loss) and self.feedback_trace.sum() > 0 and self.inp_trace.sum() > 0:
-                fb = self.feedback_trace - 0.5*self.feedback_trace.mean()
-                dW = torch.outer(fb * surr, self.inp_trace)
+                dW = torch.outer(self.feedback_trace * surr, self.inp_trace)
                 self.cvp[0] += 1
                 self.cvp[1] += dW.mean()
-            elif self.feedback_trace is not None and spk.sum()>10:
-                self.feedback_trace *= 1
             
             # contrastive update
             if self.negative_spk_trace is not None and self._dL(loss_contrastive) and self.inp_trace.sum() > 0:
@@ -212,9 +215,6 @@ class CLAPP_layer_bio(nn.Module):
                     dW -= dW_2
                 else:
                     dW = -dW_2
-            elif self.feedback_trace is not None and spk.sum()>10:
-                self.feedback_trace *= 1
-            
             
             if dW is not None:
                 if self.fc.weight.grad is None:
@@ -226,7 +226,7 @@ class CLAPP_layer_bio(nn.Module):
             self.feedback_trace = self._update_feedback_trace(spk)
         elif self.feedback_trace is not None:
             loss = self.CLAPP_loss(1, self.spk_trace)
-        return spk, spk if self.spk_trace is None else self.spk_trace, (loss + loss_contrastive) / 2
+        return spk, self.mem, (loss + loss_contrastive) / 2
 
 
 class CLAPP_layer_segmented(nn.Module):

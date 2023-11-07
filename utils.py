@@ -83,12 +83,13 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
     torch.set_grad_enabled(False)
     clapp_loss_hist = []
     # training loop
-    print_interval = 500
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-4} for par in net.clapp])
-                                       #[{"params": par.pred.parameters(), 'lr': 2e-4} for par in net.clapp])
+    print_interval = 200
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp])
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer_clapp, start_factor=1.0, end_factor=1e-2, total_iters=min(epochs, 30))
     optimizer_clapp.zero_grad()
     net.train()
-    spks = torch.zeros(len(net.clapp)+1)
+    epoch = 0
+    spks = torch.zeros(len(net.clapp)+1, device=device)
     target = torch.randint(trainloader.num_classes, (1,)).item()
     while True:
         # Choose the next random target that is different from current target
@@ -114,15 +115,17 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
                 clapp_loss_hist.append(cl/100)
                 if len(clapp_loss_hist) % batch_size == 0:
                     optimizer_clapp.step()
-                    # print(f'Mean grad: {net.clapp[0].fc.weight.grad.mean()}, {net.clapp[1].fc.weight.grad.mean()}, {net.clapp[2].fc.weight.grad.mean()}')
+                    # print(f'Mean grad: {[net.clapp[i].fc.weight.grad.mean() for i in range(len(net.clapp))]}')
                     optimizer_clapp.zero_grad()
                 #break
 
-        epoch = len(clapp_loss_hist) // len(trainloader)
+        if len(clapp_loss_hist) % len(trainloader) == 0:
+            epoch = len(clapp_loss_hist)//len(trainloader)
+            scheduler.step()
         if len(clapp_loss_hist) % print_interval == 0 and len(clapp_loss_hist) > 1:
             print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-print_interval:]).mean(axis=0)}")
             print(f"Spks: {spks/print_interval}")
-            spks = torch.zeros(len(net.clapp)+1)
+            spks = torch.zeros(len(net.clapp)+1, device=device)
         if epoch >= epochs:
             break
     return torch.stack(clapp_loss_hist)
