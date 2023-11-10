@@ -57,7 +57,7 @@ class CLAPP_SNN(nn.Module):
 
 class CLAPP_Sequence_SNN(nn.Module):
     def __init__(self, num_inputs, num_hidden: list, num_outputs, device='cuda',
-                 beta=0.96, segment_length=20, out_proj=True):
+                 beta=0.96, segment_length=20, out_proj=True, recurrent=True):
         """
         Initializes the CLAPP SNN with the given parameters.
         This class is used for data with temporal structure, such as SHD.
@@ -75,42 +75,59 @@ class CLAPP_Sequence_SNN(nn.Module):
         layer_type = CLAPP_layer_bio
         # layer_type = CLAPP_layer_segmented
         # Initialized the CLAPP layers with shapes from num_hidden
-        self.clapp = torch.nn.ModuleList([layer_type(num_inputs+num_hidden[0], num_hidden[0], beta, device)])
+        if recurrent:
+            self.clapp = torch.nn.ModuleList([layer_type(num_inputs+num_hidden[0], num_hidden[0], beta, device)])
+        else:
+            self.clapp = torch.nn.ModuleList([layer_type(num_inputs, num_hidden[0], beta, device)])
         for idx_hidden in range(1, len(num_hidden)):
-            self.clapp.append(layer_type(num_hidden[idx_hidden-1] + num_hidden[idx_hidden],
-                                          num_hidden[idx_hidden], beta, device))
+            if recurrent:
+                self.clapp.append(layer_type(num_hidden[idx_hidden-1] + num_hidden[idx_hidden],
+                                                num_hidden[idx_hidden], beta, device))
+            else:
+                self.clapp.append(layer_type(num_hidden[idx_hidden-1],
+                                                num_hidden[idx_hidden], beta, device))
 
         # initialize output layer
         if self.has_out_proj:
             self.out_proj = CLAPP_out(num_hidden[-1], num_outputs, beta)#nn.Linear(num_hidden[-1], num_outputs)
         self.segment_length = segment_length
-        self.hidden_state = [torch.zeros(num_hidden[i], device=device) for i in range(len(num_hidden))]
+        if recurrent:
+            self.hidden_state = [torch.zeros(num_hidden[i], device=device) for i in range(len(num_hidden))]
     
     def reset(self):
         for clapp_layer in self.clapp:
             clapp_layer.reset()
         if self.has_out_proj:
             self.out_proj.reset()
-        self.hidden_state = [torch.zeros_like(self.hidden_state[i], device=self.hidden_state[i].device) for i in range(len(self.hidden_state))]
+        if hasattr(self, 'hidden_state'):
+            self.hidden_state = [torch.zeros_like(self.hidden_state[i], device=self.hidden_state[i].device) for i in range(len(self.hidden_state))]
 
-    def forward(self, inp, target, bf: int, freeze: list=[]):
+    def forward(self, inp, target, bf: int, freeze: list=[], incr_spks=None):
+        if incr_spks == None:
+            incr_spks = [0]*len(self.clapp)
         with torch.no_grad():
             mems = len(self.clapp)*[None]
             losses = torch.zeros(len(self.clapp))
-            clapp_in = torch.cat((inp, self.hidden_state[0]))
+            if hasattr(self, 'hidden_state'):
+                clapp_in = torch.cat((inp, self.hidden_state[0]))
+            else:
+                clapp_in = inp
             out_spk = []
             for idx, clapp_layer in enumerate(self.clapp):
-                factor = bf if not idx in freeze else ''
-                spk, mem, loss = clapp_layer(clapp_in, factor)
+                spk, mem, loss = clapp_layer(clapp_in, incr_spks[idx])
                 if idx < len(self.clapp) - 1:
-                    clapp_in = torch.cat((spk, self.hidden_state[idx+1]))
+                    if hasattr(self, 'hidden_state'):
+                        clapp_in = torch.cat((spk, self.hidden_state[idx+1]))
+                    else:
+                        clapp_in = spk
                 mems[idx] = mem
                 losses[idx] = loss
                 out_spk.append(spk)
             # Final output projection
-            self.hidden_state = out_spk
+            if hasattr(self, 'hidden_state'):
+                self.hidden_state = out_spk
             if self.has_out_proj:
-                clapp_in, out_mem = self.out_proj(clapp_in, target)
+                clapp_in, out_mem = self.out_proj(out_spk[-1], target)
                 out_spk.append(clapp_in)
 
 
@@ -185,7 +202,7 @@ class CLAPP_layer_bio(nn.Module):
     def _dL(self, loss) -> bool:
         return loss > 0
 
-    def forward(self, inp, event):
+    def forward(self, inp, incr_spk):
         cur = self.fc(inp)
         spk, self.mem = self.lif(cur, self.mem)
 
@@ -208,7 +225,7 @@ class CLAPP_layer_bio(nn.Module):
             
             # contrastive update
             if self.negative_spk_trace is not None and self._dL(loss_contrastive) and self.inp_trace.sum() > 0:
-                dW_2 = torch.outer(self.negative_spk_trace * surr, self.inp_trace)
+                dW_2 = torch.outer((self.negative_spk_trace - incr_spk*self.negative_spk_trace.mean()) * surr, self.inp_trace)
                 self.cvp[2] += 1
                 self.cvp[3] += dW_2.mean()
                 if dW is not None:

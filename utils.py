@@ -84,13 +84,16 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
     clapp_loss_hist = []
     # training loop
     print_interval = 200
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp])
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-5} for par in net.clapp])
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer_clapp, start_factor=1.0, end_factor=1e-2, total_iters=min(epochs, 30))
     optimizer_clapp.zero_grad()
     net.train()
     epoch = 0
     spks = torch.zeros(len(net.clapp)+1, device=device)
     target = torch.randint(trainloader.num_classes, (1,)).item()
+    # spk rates tend to be too low -> set incr_spks to 1 if spks are under target
+    spk_target = 5
+    incr_spks = [0]*len(net.clapp)
     while True:
         # Choose the next random target that is different from current target
         data, target = trainloader.next_item(int(target), contrastive=True)
@@ -108,7 +111,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
                 event = 'predict_evaluate'
             else:
                 event = ''
-            spk, _, clapp_loss = net(data[step].flatten(), target, event, freeze)
+            spk, _, clapp_loss = net(data[step].flatten(), target, event, freeze, incr_spks)
             cl += clapp_loss
             spks += torch.stack([data[step].mean(), *[sp.mean() for sp in spk]])
             if 'evaluate' == event:
@@ -125,6 +128,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
         if len(clapp_loss_hist) % print_interval == 0 and len(clapp_loss_hist) > 1:
             print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-print_interval:]).mean(axis=0)}")
             print(f"Spks: {spks/print_interval}")
+            incr_spks = [1 if spk < spk_target else 0 for spk in spks[1:]/print_interval]
             spks = torch.zeros(len(net.clapp)+1, device=device)
         if epoch >= epochs:
             break
