@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 import snntorch.functional as SF
 import snntorch as snn
+from collections import deque
 
 def train(net, trainloader, epochs, device):
     """
@@ -90,6 +91,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
     net.train()
     epoch = 0
     spks = torch.zeros(len(net.clapp)+1, device=device)
+    spk_deque = deque(maxlen=10*trainloader.num_classes)
     target = torch.randint(trainloader.num_classes, (1,)).item()
     # spk rates tend to be too low -> set incr_spks to 1 if spks are under target
     spk_target = 5
@@ -121,15 +123,16 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
                     # print(f'Mean grad: {[net.clapp[i].fc.weight.grad.mean() for i in range(len(net.clapp))]}')
                     optimizer_clapp.zero_grad()
                 #break
+        spk_deque.append(spks)
+        spks = torch.zeros(len(net.clapp)+1, device=device)
+        incr_spks = [1 if spk < spk_target else 0 for spk in torch.stack(spk_deque).mean(axis=0)[1:]]
 
         if len(clapp_loss_hist) % len(trainloader) == 0:
             epoch = len(clapp_loss_hist)//len(trainloader)
             scheduler.step()
         if len(clapp_loss_hist) % print_interval == 0 and len(clapp_loss_hist) > 1:
             print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-print_interval:]).mean(axis=0)}")
-            print(f"Spks: {spks/print_interval}")
-            incr_spks = [1 if spk < spk_target else 0 for spk in spks[1:]/print_interval]
-            spks = torch.zeros(len(net.clapp)+1, device=device)
+            print(f"Spks: {torch.stack(spk_deque).mean()}")
         if epoch >= epochs:
             break
     return torch.stack(clapp_loss_hist)
