@@ -22,7 +22,7 @@ if __name__ == '__main__':
     args = Args()
     torch.manual_seed(123)
     # load dataset
-    train_loader, test_loader = load_classwise_PMNIST(args.n_time_bins, scale=args.poisson_scale) 
+    train_loader, _, test_loader = load_classwise_PMNIST(args.n_time_bins, scale=args.poisson_scale, split_train=True) 
 
     # train and save model
     SNN = CLAPP_SNN(args.n_inputs, args.n_hidden, args.n_outputs, beta=args.beta, out_proj=False).to(args.device)

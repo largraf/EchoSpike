@@ -84,7 +84,7 @@ def load_SHD(n_time_bins, batch_size=1):
     test_loader = classwise_loader(shd_test_x, shd_test_y, 20)
     return train_loader, test_loader
 
-def load_classwise_PMNIST(n_time_steps, batch_size=1, scale=1):
+def load_classwise_PMNIST(n_time_steps, scale=1, split_train=False):
     """
     Load the Poisson spike encoded MNIST dataset with the specified parameters.
 
@@ -99,6 +99,7 @@ def load_classwise_PMNIST(n_time_steps, batch_size=1, scale=1):
     """
     import torchvision
     import torchvision.transforms as transforms
+    torch.manual_seed(123)
     trainset = torchvision.datasets.MNIST(root='./data', 
                                             train=True, 
                                            download=True)
@@ -107,8 +108,19 @@ def load_classwise_PMNIST(n_time_steps, batch_size=1, scale=1):
                                            download=True)
     train_x = snn.spikegen.rate(trainset.data * 2**-8 * scale, n_time_steps).swapaxes(0,1).view(trainset.data.shape[0], n_time_steps, -1)
     test_x = snn.spikegen.rate(testset.data * 2**-8 * scale, n_time_steps).swapaxes(0,1).view(testset.data.shape[0], n_time_steps, -1)
-    train_loader = classwise_loader(train_x, trainset.targets, 10)
     test_loader = classwise_loader(test_x, testset.targets, 10)
+
+    if split_train == True:
+        # Optionally split the train set in an 80/20 split
+
+        shuffled_idx = torch.randperm(len(train_x))
+        train_x = train_x[shuffled_idx]
+        trainset.targets = trainset.targets[shuffled_idx]
+        train_loader_1 = classwise_loader(train_x[:int(0.8*len(train_x))], trainset.targets[:int(0.8*len(train_x))], 10)
+        train_loader_2 = classwise_loader(train_x[int(0.8*len(train_x)):], trainset.targets[int(0.8*len(train_x)):], 10)
+        return train_loader_1, train_loader_2, test_loader
+
+    train_loader = classwise_loader(train_x, trainset.targets, 10)
     return train_loader, test_loader
 
 
