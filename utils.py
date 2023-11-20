@@ -125,14 +125,14 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
                 #break
         spk_deque.append(spks)
         spks = torch.zeros(len(net.clapp)+1, device=device)
-        incr_spks = [1 if spk < spk_target else 0 for spk in torch.stack(spk_deque).mean(axis=0)[1:]]
+        incr_spks = [1 if spk < spk_target else 0 for spk in torch.stack(list(spk_deque)).mean(axis=0)[1:]]
 
         if len(clapp_loss_hist) % len(trainloader) == 0:
             epoch = len(clapp_loss_hist)//len(trainloader)
             scheduler.step()
         if len(clapp_loss_hist) % print_interval == 0 and len(clapp_loss_hist) > 1:
             print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-print_interval:]).mean(axis=0)}")
-            print(f"Spks: {torch.stack(spk_deque).mean()}")
+            print(f"Spks: {torch.stack(list(spk_deque)).mean(axis=0)}")
         if epoch >= epochs:
             break
     return torch.stack(clapp_loss_hist)
@@ -156,14 +156,16 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
     torch.set_grad_enabled(False)
     torch.manual_seed(123)
     clapp_loss_hist = []
+    print_interval = 3000
     current_epoch_loss = 1e5 # some large number
     # training loop
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp] +
-                                       [{"params": par.pred.parameters(), 'lr': 1e-3} for par in net.clapp])
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp])
+                                    #    [{"params": par.pred.parameters(), 'lr': 1e-3} for par in net.clapp])
     optimizer_clapp.zero_grad()
     net.train()
     bf = 0
     target = torch.randint(trainloader.num_classes, (1,)).item()
+    spks = torch.zeros(len(net.clapp)+1, device=device)
     while True:
         data, target = trainloader.next_item(int(target), contrastive=(bf==-1))
         net.reset()
@@ -173,12 +175,13 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
 
         for step in range(data.shape[0]):
             factor = bf if step == data.shape[0]-1 else 0
-            _, _, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device), freeze)
+            spk, _, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device), freeze)
             if factor != 0:
                 clapp_loss_hist.append(clapp_loss)
                 if len(clapp_loss_hist) % batch_size == 0:
                     optimizer_clapp.step()
                     optimizer_clapp.zero_grad()
+            spks += torch.stack([data[step].mean(), *[sp.mean() for sp in spk]])
         coin_flip = torch.rand(1) > 0.5
         if coin_flip:
             bf = -1
@@ -186,8 +189,10 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
             bf = 1
 
         epoch = len(clapp_loss_hist) // len(trainloader)
-        if len(clapp_loss_hist) % 5000 == 0 and len(clapp_loss_hist) > 1:
-            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-5000:]).sum(axis=0)/5000}")
+        if len(clapp_loss_hist) % print_interval == 0 and len(clapp_loss_hist) > 1:
+            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-print_interval:]).sum(axis=0)/print_interval}")
+            print(f"Spks: {spks/print_interval}")
+            spks = torch.zeros(len(net.clapp)+1, device=device)
         if epoch >= epochs:
             break
         if len(clapp_loss_hist) % len(trainloader) == 0 and(epoch + 1) % 5 == 0:

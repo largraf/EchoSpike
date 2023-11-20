@@ -368,7 +368,8 @@ class CLAPP_layer(nn.Module):
         self.inp_trace, self.spk_trace = None, None
         self.prev_spk_trace, self.prev_inp_trace = None, None
         self.trace_decay = beta
-        self.pred = nn.Linear(num_hidden, num_hidden, bias=False)
+        # self.pred = nn.Linear(num_hidden, num_hidden, bias=False)
+        self.debug_counter = [0, 0, 0, 0]
         self.reset()
 
     def reset(self):
@@ -381,7 +382,11 @@ class CLAPP_layer(nn.Module):
             self.inp_trace = None
     
     def CLAPP_loss(self, bf, current):
-        return torch.relu(1 - bf * (current * self.feedback).sum())
+        fb = self.feedback - self.feedback.mean()
+        if bf == 1:
+            return torch.relu(50 - (current * fb).sum())
+        else:
+            return torch.relu((current * fb).sum())
 
     @staticmethod
     def _surrogate(x):
@@ -411,17 +416,23 @@ class CLAPP_layer(nn.Module):
                 spk = torch.clamp(spk + rand_spks, max=1)
             if self.feedback is not None and bf != 0:
                 loss = self.CLAPP_loss(bf, self.spk_trace)
+                if bf == 1:
+                    self.debug_counter[0] += 1
+                    self.debug_counter[1] += loss
+                else:
+                    self.debug_counter[2] += 1
+                    self.debug_counter[3] += loss
             if bf != 0 and self._dL(loss) and self.prev_spk_trace is not None:
                 # update the weights according to CLAPP learning rule
                 retrodiction = torch.where(self.spk_trace > 0, self.spk_trace, -0.1)# nn.functional.linear(self.spk_trace, self.pred.weight.T)  #  self.retro(spk)
                 # first part Forward weights update
                 dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.spk_trace), self.inp_trace)
                 # prediction and retrodiction weight update
-                dW_pred = bf * torch.outer(self.spk_trace, self.prev_spk_trace) # (spk, self.prev_spk)
-                if self.pred.weight.grad is None:
-                    self.pred.weight.grad = - dW_pred
-                else:
-                    self.pred.weight.grad -= dW_pred
+                # dW_pred = bf * torch.outer(self.spk_trace, self.prev_spk_trace) 
+                # if self.pred.weight.grad is None:
+                #     self.pred.weight.grad = - dW_pred
+                # else:
+                #     self.pred.weight.grad -= dW_pred
                 # second part of forward weight update
                 dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace), self.prev_inp_trace)
                 if self.fc.weight.grad is None:
