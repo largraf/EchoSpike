@@ -29,7 +29,7 @@ class CLAPP_SNN(nn.Module):
         # initialize output layer
         if self.has_out_proj:
             self.out_proj = CLAPP_out(num_hidden[-1], num_outputs, beta)
-    
+ 
     def reset(self):
         for clapp_layer in self.clapp:
             clapp_layer.reset()
@@ -54,6 +54,7 @@ class CLAPP_SNN(nn.Module):
                 out_spk.append(spk)
 
         return out_spk, torch.stack(spike_traces), losses
+
 
 class CLAPP_Sequence_SNN(nn.Module):
     def __init__(self, num_inputs, num_hidden: list, num_outputs, device='cuda',
@@ -360,8 +361,8 @@ class CLAPP_layer(nn.Module):
         self.fc = nn.Linear(num_inputs, num_hidden, bias=False)
         with torch.no_grad():
             # too small weights create no spikes at all -> no learning
-            self.fc.weight *= 8
-        self.lif = snn.Leaky(beta=beta, reset_mechanism='zero')
+            self.fc.weight *= 3
+        self.lif = snn.Leaky(beta=beta) # , reset_mechanism='zero')
         self.n_time_steps = n_time_steps
         # Recursive feedback
         self.feedback = None
@@ -384,14 +385,14 @@ class CLAPP_layer(nn.Module):
     def CLAPP_loss(self, bf, current):
         fb = self.feedback - self.feedback.mean()
         if bf == 1:
-            return torch.relu(50 - (current * fb).sum())
+            return torch.relu(0.075*fb.shape[-1] - (current * fb).sum(axis=-1))
         else:
-            return torch.relu((current * fb).sum())
+            return torch.relu((current * fb).sum(axis=-1))
 
     @staticmethod
-    def _surrogate(x):
-        # surr = 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
-        return torch.heaviside(x, torch.zeros_like(x))
+    def _surrogate(x, loss):
+        surr = torch.heaviside(x, torch.zeros_like(x))
+        return torch.einsum('b,bn->bn', loss > 0, surr)
 
     def _update_trace(self, trace, spk):
         # non decaying trace for static data
@@ -401,13 +402,11 @@ class CLAPP_layer(nn.Module):
             trace = trace + spk/self.n_time_steps
         return trace
      
-    def _dL(self, loss) -> bool:
-        return loss > 0
-
     def forward(self, inp, bf, dropin=0):
+        batched = inp.ndim == 2
         cur = self.fc(inp)
         spk, self.mem = self.lif(cur, self.mem)
-        loss = 0
+        loss = torch.tensor(0.)
         self.spk_trace = self._update_trace(self.spk_trace, spk)
         if self.training:
             self.inp_trace = self._update_trace(self.inp_trace, inp)
@@ -417,16 +416,22 @@ class CLAPP_layer(nn.Module):
             if self.feedback is not None and bf != 0:
                 loss = self.CLAPP_loss(bf, self.spk_trace)
                 if bf == 1:
-                    self.debug_counter[0] += 1
-                    self.debug_counter[1] += loss
+                    self.debug_counter[0] += (loss > 0).sum()
+                    self.debug_counter[1] += loss.mean()
                 else:
-                    self.debug_counter[2] += 1
-                    self.debug_counter[3] += loss
-            if bf != 0 and self._dL(loss) and self.prev_spk_trace is not None:
+                    self.debug_counter[2] += (loss > 0).sum()
+                    self.debug_counter[3] += loss.mean()
+
+            if bf != 0 and self.prev_spk_trace is not None:
                 # update the weights according to CLAPP learning rule
                 retrodiction = torch.where(self.spk_trace > 0, self.spk_trace, -0.1)# nn.functional.linear(self.spk_trace, self.pred.weight.T)  #  self.retro(spk)
                 # first part Forward weights update
-                dW = bf * torch.outer(self.feedback * CLAPP_layer._surrogate(self.spk_trace), self.inp_trace)
+                if batched:
+                    dW = bf * torch.einsum('bi, bj->bij', self.feedback * CLAPP_layer._surrogate(self.spk_trace, loss), self.inp_trace).mean(axis=0)
+                    dW += bf * torch.einsum('bi, bj->bij', retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace, loss), self.prev_inp_trace).mean(axis=0)
+                else:
+                    dW = bf * torch.einsum('i, j->ij', self.feedback * CLAPP_layer._surrogate(self.spk_trace, loss), self.inp_trace)
+                    dW += bf * torch.einsum('i, j->ij', retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace, loss), self.prev_inp_trace)
                 # prediction and retrodiction weight update
                 # dW_pred = bf * torch.outer(self.spk_trace, self.prev_spk_trace) 
                 # if self.pred.weight.grad is None:
@@ -434,14 +439,13 @@ class CLAPP_layer(nn.Module):
                 # else:
                 #     self.pred.weight.grad -= dW_pred
                 # second part of forward weight update
-                dW += bf * torch.outer(retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace), self.prev_inp_trace)
                 if self.fc.weight.grad is None:
                     self.fc.weight.grad = -dW
                 else:
                     self.fc.weight.grad -= dW
         elif bf != 0 and self.feedback is not None:
             loss = self.CLAPP_loss(bf, self.spk_trace)
-        return spk, self.spk_trace, loss
+        return spk, self.spk_trace, loss.mean()
 
 
 class CLAPP_out(nn.Module):
@@ -477,11 +481,12 @@ class CLAPP_out(nn.Module):
         return spk, self.mem
 
 if __name__ == '__main__': 
-    from utils import load_PMNIST, train, test
-    train_loader, test_loader = load_PMNIST(4, batch_size=1)
+    from utils import train_samplewise_clapp
+    from data import load_classwise_PMNIST
+    train_loader, test_loader = load_classwise_PMNIST(10)
 
-    SNN = CLAPP_SNN(28**2, [512], 10).to('cpu')
-    loss_hist, target_list, clapp_loss_hist = train(SNN, train_loader, 1, 'cpu')
-    losses, loss_per_digit, clapp_activation, target_list = test(SNN, test_loader, 'cpu')
-    print(loss_per_digit)
-    print('Accuracy:', losses.sum()/10000)
+    SNN = CLAPP_MLP_Mixer(28**2, [512, 512], 10).to('cpu')
+    loss_hist, target_list, clapp_loss_hist = train_samplewise_clapp(SNN, train_loader, 3, 'cpu', 'test_mixer', batch_size=60)
+    # losses, loss_per_digit, clapp_activation, target_list = test(SNN, test_loader, 'cpu')
+    # print(loss_per_digit)
+    # print('Accuracy:', losses.sum()/10000)

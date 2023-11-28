@@ -35,38 +35,59 @@ def load_NMNIST(n_time_bins, batch_size=1):
     return train_loader, test_loader
 
 class classwise_loader():
-    def __init__(self, x, y, num_classes):
+    def __init__(self, x, y, num_classes, batch_size=1):
         torch.manual_seed(123)
-        self.x = x
-        self.y = y
+        if type(x) == torch.Tensor:
+            # For regular MNIST
+            self.x = x
+        else:
+            # For NMNIST
+            self.x = None
+            self.data = x
+        self.batch_size = batch_size
+        self.y = torch.tensor(y)
         self.num_classes = num_classes
         self.idx_per_target = num_classes * [0]
         self.target_indeces = [torch.argwhere(self.y == t).squeeze() for t in range(num_classes)]
         for target in range(self.num_classes):
             self.shuffle(target)
 
+    
     def __len__(self):
-        return len(self.x)
+        return len(self.y)
     
     def shuffle(self, target):
         idx = torch.randperm(len(self.target_indeces[target]))
         self.target_indeces[target] = self.target_indeces[target][idx]
         self.idx_per_target[target] = 0
     
-    def next_item(self, target: int, contrastive=False):
-        if contrastive or target == -1:
-            if target == -1:
-                target = torch.randint(0, self.num_classes, (1,)).item()
-            else:
-                next_target = torch.randint(0, self.num_classes-1, (1,)).item()
-                if next_target >= target:
-                    next_target += 1
-                target = next_target
-        if self.idx_per_target[target] >= len(self.target_indeces[target]):
-            self.shuffle(target)
-        idx = self.target_indeces[target][self.idx_per_target[target]]
-        self.idx_per_target[target] += 1
-        return self.x[idx], self.y[idx]
+    def next_item(self, target, contrastive=False):
+        if type(target) == int:
+            target = [target]
+        indeces = []
+        for ta in target:
+            if contrastive or ta == -1:
+                if ta == -1:
+                    ta = torch.randint(0, self.num_classes, (1,)).item()
+                else:
+                    next_target = torch.randint(0, self.num_classes-1, (1,)).item()
+                    if next_target >= ta:
+                        next_target += 1
+                    ta = next_target
+            if self.idx_per_target[ta] >= len(self.target_indeces[ta]):
+                self.shuffle(ta)
+            indeces.append(self.target_indeces[ta][self.idx_per_target[ta]])
+            self.idx_per_target[ta] += 1
+
+        if self.x is None:
+            imgs = []
+            targets = []
+            for i in indeces:
+                im, t = self.data[i]
+                imgs.append(torch.tensor(im).view(im.shape[0], -1))
+                targets.append(t)
+            return torch.stack(imgs).transpose(0, 1), torch.tensor(targets)
+        return self.x[indeces], self.y[indeces]
 
 
 def load_SHD(n_time_bins, batch_size=1):
@@ -82,6 +103,53 @@ def load_SHD(n_time_bins, batch_size=1):
     testset = TensorDataset(shd_test_x, shd_test_y)
     # test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
     test_loader = classwise_loader(shd_test_x, shd_test_y, 20)
+    return train_loader, test_loader
+
+def load_classwise_NMNIST(n_time_steps, split_train=False, batch_size=1):
+    """
+    Load the Poisson spike encoded MNIST dataset with the specified parameters.
+
+    Parameters:
+        n_time_steps (int): The number of time steps for the spike encoding.
+        batch_size (int, optional): The batch size for the data loaders. Default is 1.
+        scale (int, optional): The scaling factor for the spike encoding. Default is 1.
+
+    Returns:
+        train_loader (torch.utils.data.DataLoader): The data loader for the training set.
+        test_loader (torch.utils.data.DataLoader): The data loader for the test set.
+    """
+    import tonic
+    from tonic import transforms
+    # load NMNIST dataset
+    sensor_size = tonic.datasets.NMNIST.sensor_size
+    print(sensor_size)
+    transf = [transforms.Denoise(filter_time=10000),
+              transforms.ToFrame(sensor_size=sensor_size,
+                                 n_time_bins=n_time_steps)]
+    frame_transform = transforms.Compose(transf)
+
+    trainset = tonic.datasets.NMNIST(save_to='./data',
+                                     transform=frame_transform, train=True)
+    testset = tonic.datasets.NMNIST(save_to='./data',
+                                    transform=frame_transform, train=False)
+
+    test_loader = classwise_loader(testset, testset.targets, 10, batch_size)
+
+    if split_train == True:
+        # Optionally split the train set in a two split
+        split = 0.9
+        shuffled_idx = torch.randperm(len(trainset))
+        indeces_1 = shuffled_idx[:int(split*len(trainset))]
+        indeces_2 = shuffled_idx[int(split*len(trainset)):]
+        targets_1 = torch.ones_like(shuffled_idx) * -1
+        targets_1[indeces_1] = torch.tensor(trainset.targets)[indeces_1]
+        train_loader_1 = classwise_loader(trainset, targets_1, 10, batch_size)
+        targets_2 = torch.ones_like(shuffled_idx) * -1
+        targets_2[indeces_2] = torch.tensor(trainset.targets)[indeces_2]
+        train_loader_2 = classwise_loader(trainset, targets_2, 10, batch_size)
+        return train_loader_1, train_loader_2, test_loader
+
+    train_loader = classwise_loader(trainset, 10, batch_size)
     return train_loader, test_loader
 
 def load_classwise_PMNIST(n_time_steps, scale=1, split_train=False):
@@ -112,12 +180,12 @@ def load_classwise_PMNIST(n_time_steps, scale=1, split_train=False):
 
     if split_train == True:
         # Optionally split the train set in an 80/20 split
-
+        split = 0.9
         shuffled_idx = torch.randperm(len(train_x))
         train_x = train_x[shuffled_idx]
         trainset.targets = trainset.targets[shuffled_idx]
-        train_loader_1 = classwise_loader(train_x[:int(0.8*len(train_x))], trainset.targets[:int(0.8*len(train_x))], 10)
-        train_loader_2 = classwise_loader(train_x[int(0.8*len(train_x)):], trainset.targets[int(0.8*len(train_x)):], 10)
+        train_loader_1 = classwise_loader(train_x[:int(split*len(train_x))], trainset.targets[:int(split*len(train_x))], 10)
+        train_loader_2 = classwise_loader(train_x[int(split*len(train_x)):], trainset.targets[int(split*len(train_x)):], 10)
         return train_loader_1, train_loader_2, test_loader
 
     train_loader = classwise_loader(train_x, trainset.targets, 10)

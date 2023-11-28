@@ -156,49 +156,44 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
     torch.set_grad_enabled(False)
     torch.manual_seed(123)
     clapp_loss_hist = []
-    print_interval = 3000
+    print_interval = 10000
     current_epoch_loss = 1e5 # some large number
     # training loop
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp])
-                                    #    [{"params": par.pred.parameters(), 'lr': 1e-3} for par in net.clapp])
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp])
     optimizer_clapp.zero_grad()
     net.train()
     bf = 0
-    target = torch.randint(trainloader.num_classes, (1,)).item()
+    target = [torch.randint(trainloader.num_classes, (1,)).item() for _ in range(batch_size)]
     spks = torch.zeros(len(net.clapp)+1, device=device)
     while True:
-        data, target = trainloader.next_item(int(target), contrastive=(bf==-1))
+        data, target = trainloader.next_item(target, contrastive=(bf==-1))
         net.reset()
-        data = data.squeeze(0).float().to(device)
-        logits_per_step = []
+        data = data.float().to(device)
         target = target.to(device)
 
         for step in range(data.shape[0]):
             factor = bf if step == data.shape[0]-1 else 0
-            spk, _, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device), freeze)
-            if factor != 0:
-                clapp_loss_hist.append(clapp_loss)
-                if len(clapp_loss_hist) % batch_size == 0:
-                    optimizer_clapp.step()
-                    optimizer_clapp.zero_grad()
-            spks += torch.stack([data[step].mean(), *[sp.mean() for sp in spk]])
-        coin_flip = torch.rand(1) > 0.5
-        if coin_flip:
-            bf = -1
-        else:
-            bf = 1
+            spk, _, clapp_loss = net(data[step], target, torch.tensor(factor, device=device), freeze)
+            spks += torch.stack([data[step].mean(), *[sp.mean() for sp in spk]])    # to analyze nr of spks
 
-        epoch = len(clapp_loss_hist) // len(trainloader)
-        if len(clapp_loss_hist) % print_interval == 0 and len(clapp_loss_hist) > 1:
-            print(f"Epoch {epoch}, Iteration {len(clapp_loss_hist)} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-print_interval:]).sum(axis=0)/print_interval}")
-            print(f"Spks: {spks/print_interval}")
+        clapp_loss_hist.append(clapp_loss)
+        if bf == -1:
+            # ensure that there was one predictive and one contrastive batch, before weight update
+            optimizer_clapp.step()
+            optimizer_clapp.zero_grad()
+        bf = 1 if bf != 1 else -1
+        step = len(clapp_loss_hist) * batch_size
+        epoch = step // len(trainloader)
+        if step % print_interval < batch_size and len(clapp_loss_hist) > 1:
+            print(f"Epoch {epoch}, Step {step} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-print_interval//batch_size:]).mean(axis=0)}")
+            print(f"Spks: {spks*batch_size/print_interval}")
             spks = torch.zeros(len(net.clapp)+1, device=device)
         if epoch >= epochs:
             break
-        if len(clapp_loss_hist) % len(trainloader) == 0 and(epoch + 1) % 5 == 0:
+        if step % len(trainloader) < batch_size and (epoch + 1) % 5 == 0:
             # save checkpoint if performance improves
             last_epoch_loss = current_epoch_loss
-            current_epoch_loss = torch.stack(clapp_loss_hist[-len(trainloader):]).mean().item()
+            current_epoch_loss = torch.stack(clapp_loss_hist[-len(trainloader)//batch_size:]).mean().item()
             print(f'epoch loss: {current_epoch_loss}')
             if current_epoch_loss < last_epoch_loss:
                 torch.save(net.state_dict(), f'models/{model_name}_epoch{epoch}.pt')
