@@ -364,8 +364,6 @@ class CLAPP_layer(nn.Module):
             self.fc.weight *= 3
         self.lif = snn.Leaky(beta=beta) # , reset_mechanism='zero')
         self.n_time_steps = n_time_steps
-        # Recursive feedback
-        self.feedback = None
         self.inp_trace, self.spk_trace = None, None
         self.prev_spk_trace, self.prev_inp_trace = None, None
         self.trace_decay = beta
@@ -376,14 +374,13 @@ class CLAPP_layer(nn.Module):
     def reset(self):
         self.mem = self.lif.init_leaky()
         if self.spk_trace is not None:
-            self.feedback = torch.where(self.spk_trace > 0, self.spk_trace, -0.1) #self.pred(self.spk_trace)
             self.prev_spk_trace = self.spk_trace
             self.prev_inp_trace = self.inp_trace
             self.spk_trace = None
             self.inp_trace = None
     
     def CLAPP_loss(self, bf, current):
-        fb = self.feedback - self.feedback.mean()
+        fb = self.prev_spk_trace - self.prev_spk_trace.mean()
         if bf == 1:
             return torch.relu(0.075*fb.shape[-1] - (current * fb).sum(axis=-1))
         else:
@@ -413,7 +410,7 @@ class CLAPP_layer(nn.Module):
             if dropin > 0:
                 rand_spks = torch.bernoulli(torch.ones_like(spk) * dropin)
                 spk = torch.clamp(spk + rand_spks, max=1)
-            if self.feedback is not None and bf != 0:
+            if self.prev_spk_trace is not None and bf != 0:
                 loss = self.CLAPP_loss(bf, self.spk_trace)
                 if bf == 1:
                     self.debug_counter[0] += (loss > 0).sum()
@@ -424,14 +421,13 @@ class CLAPP_layer(nn.Module):
 
             if bf != 0 and self.prev_spk_trace is not None:
                 # update the weights according to CLAPP learning rule
-                retrodiction = torch.where(self.spk_trace > 0, self.spk_trace, -0.1)# nn.functional.linear(self.spk_trace, self.pred.weight.T)  #  self.retro(spk)
                 # first part Forward weights update
                 if batched:
-                    dW = bf * torch.einsum('bi, bj->bij', self.feedback * CLAPP_layer._surrogate(self.spk_trace, loss), self.inp_trace).mean(axis=0)
-                    dW += bf * torch.einsum('bi, bj->bij', retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace, loss), self.prev_inp_trace).mean(axis=0)
+                    dW = bf * torch.einsum('bi, bj->bij', self.prev_spk_trace * CLAPP_layer._surrogate(self.spk_trace, loss), self.inp_trace).mean(axis=0)
+                    dW += bf * torch.einsum('bi, bj->bij', self.spk_trace * CLAPP_layer._surrogate(self.prev_spk_trace, loss), self.prev_inp_trace).mean(axis=0)
                 else:
-                    dW = bf * torch.einsum('i, j->ij', self.feedback * CLAPP_layer._surrogate(self.spk_trace, loss), self.inp_trace)
-                    dW += bf * torch.einsum('i, j->ij', retrodiction * CLAPP_layer._surrogate(self.prev_spk_trace, loss), self.prev_inp_trace)
+                    dW = bf * torch.einsum('i, j->ij', self.prev_spk_trace * CLAPP_layer._surrogate(self.spk_trace, loss), self.inp_trace)
+                    dW += bf * torch.einsum('i, j->ij', self.spk_trace * CLAPP_layer._surrogate(self.prev_spk_trace, loss), self.prev_inp_trace)
                 # prediction and retrodiction weight update
                 # dW_pred = bf * torch.outer(self.spk_trace, self.prev_spk_trace) 
                 # if self.pred.weight.grad is None:
@@ -443,7 +439,7 @@ class CLAPP_layer(nn.Module):
                     self.fc.weight.grad = -dW
                 else:
                     self.fc.weight.grad -= dW
-        elif bf != 0 and self.feedback is not None:
+        elif bf != 0 and self.prev_spk_trace is not None:
             loss = self.CLAPP_loss(bf, self.spk_trace)
         return spk, self.spk_trace, loss.mean()
 
