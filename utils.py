@@ -137,7 +137,7 @@ def train_shd_segmented(net, trainloader, epochs, device, segment_size=20, batch
             break
     return torch.stack(clapp_loss_hist)
 
-def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[]):
+def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], temporal=True):
     """
     Trains a SNN.
 
@@ -156,7 +156,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
     torch.set_grad_enabled(False)
     torch.manual_seed(123)
     clapp_loss_hist = []
-    print_interval = 10000
+    print_interval = 100
     current_epoch_loss = 1e5 # some large number
     # training loop
     optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp])
@@ -170,13 +170,21 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
         net.reset()
         data = data.float().to(device)
         target = target.to(device)
+        if temporal:
+            clapp_sample_loss = torch.zeros(len(net.clapp), device=device)
 
         for step in range(data.shape[0]):
             factor = bf if step == data.shape[0]-1 else 0
-            spk, _, clapp_loss = net(data[step], target, torch.tensor(factor, device=device), freeze)
+            if temporal:
+                factor = bf
+            spk, _, clapp_loss = net(data[step], None, torch.tensor(factor, device=device), freeze)
             spks += torch.stack([data[step].mean(), *[sp.mean() for sp in spk]])    # to analyze nr of spks
-
-        clapp_loss_hist.append(clapp_loss)
+            if temporal:
+                clapp_sample_loss += clapp_loss
+        if temporal:
+            clapp_loss_hist.append(clapp_sample_loss/data.shape[0]) 
+        else:
+            clapp_loss_hist.append(clapp_loss)
         if bf == -1:
             # ensure that there was one predictive and one contrastive batch, before weight update
             optimizer_clapp.step()

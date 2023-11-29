@@ -3,42 +3,11 @@ from torch.utils.data import DataLoader, TensorDataset
 import snntorch as snn
 
 
-def load_NMNIST(n_time_bins, batch_size=1):
-    """
-    Load the Neuromorphic-MNIST dataset.
-
-    Parameters:
-        n_time_bins (int): The number of time bins per digit.
-        batch_size (int, optional): The batch size. Defaults to 1.
-
-    Returns:
-        train_loader (DataLoader): The data loader for the training set.
-        test_loader (DataLoader): The data loader for the test set.
-    """
-    import tonic
-    from tonic import transforms
-    # load NMNIST dataset
-    sensor_size = tonic.datasets.NMNIST.sensor_size
-    print(sensor_size)
-    transf = [transforms.Denoise(filter_time=10000),
-              transforms.ToFrame(sensor_size=sensor_size,
-                                 n_time_bins=n_time_bins)]
-    frame_transform = transforms.Compose(transf)
-
-    trainset = tonic.datasets.NMNIST(save_to='./data',
-                                     transform=frame_transform, train=True)
-    testset = tonic.datasets.NMNIST(save_to='./data',
-                                    transform=frame_transform, train=False)
-
-    train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
-    return train_loader, test_loader
-
 class classwise_loader():
     def __init__(self, x, y, num_classes, batch_size=1):
         torch.manual_seed(123)
         if type(x) == torch.Tensor:
-            # For regular MNIST
+            # For regular MNIST & SHD
             self.x = x
         else:
             # For NMNIST
@@ -49,13 +18,14 @@ class classwise_loader():
         self.num_classes = num_classes
         self.idx_per_target = num_classes * [0]
         self.target_indeces = [torch.argwhere(self.y == t).squeeze() for t in range(num_classes)]
+        self.len = sum([len(ti) for ti in self.target_indeces])
         for target in range(self.num_classes):
             self.shuffle(target)
 
     
     def __len__(self):
-        return len(self.y)
-    
+        return self.len    
+
     def shuffle(self, target):
         idx = torch.randperm(len(self.target_indeces[target]))
         self.target_indeces[target] = self.target_indeces[target][idx]
@@ -66,6 +36,7 @@ class classwise_loader():
             target = [target]
         indeces = []
         for ta in target:
+            ta = int(ta)
             if contrastive or ta == -1:
                 if ta == -1:
                     ta = torch.randint(0, self.num_classes, (1,)).item()
@@ -87,22 +58,22 @@ class classwise_loader():
                 imgs.append(torch.tensor(im).view(im.shape[0], -1))
                 targets.append(t)
             return torch.stack(imgs).transpose(0, 1), torch.tensor(targets)
-        return self.x[indeces], self.y[indeces]
+        return self.x[indeces,].transpose(0, 1), self.y[indeces,]
 
 
-def load_SHD(n_time_bins, batch_size=1):
+def load_SHD(batch_size=1):
     # load SHD dataset
     shd_train_x = torch.load('./data/SHD/shd_train_x.torch')
     shd_train_y = torch.load('./data/SHD/shd_train_y.torch').squeeze()
     trainset = TensorDataset(shd_train_x, shd_train_y)
     # train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
-    train_loader = classwise_loader(shd_train_x, shd_train_y, 20)
+    train_loader = classwise_loader(shd_train_x, shd_train_y, 20, batch_size=batch_size)
 
     shd_test_x = torch.load('./data/SHD/shd_test_x.torch')
     shd_test_y = torch.load('./data/SHD/shd_test_y.torch').squeeze()
     testset = TensorDataset(shd_test_x, shd_test_y)
     # test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
-    test_loader = classwise_loader(shd_test_x, shd_test_y, 20)
+    test_loader = classwise_loader(shd_test_x, shd_test_y, 20, batch_size=batch_size)
     return train_loader, test_loader
 
 def load_classwise_NMNIST(n_time_steps, split_train=False, batch_size=1):
@@ -129,9 +100,9 @@ def load_classwise_NMNIST(n_time_steps, split_train=False, batch_size=1):
     frame_transform = transforms.Compose(transf)
 
     trainset = tonic.datasets.NMNIST(save_to='./data',
-                                     transform=frame_transform, train=True)
+                                     transform=frame_transform, train=True, first_saccade_only=True)
     testset = tonic.datasets.NMNIST(save_to='./data',
-                                    transform=frame_transform, train=False)
+                                    transform=frame_transform, train=False, first_saccade_only=True)
 
     test_loader = classwise_loader(testset, testset.targets, 10, batch_size)
 
