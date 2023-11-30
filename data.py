@@ -65,14 +65,10 @@ def load_SHD(batch_size=1):
     # load SHD dataset
     shd_train_x = torch.load('./data/SHD/shd_train_x.torch')
     shd_train_y = torch.load('./data/SHD/shd_train_y.torch').squeeze()
-    trainset = TensorDataset(shd_train_x, shd_train_y)
-    # train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
     train_loader = classwise_loader(shd_train_x, shd_train_y, 20, batch_size=batch_size)
 
     shd_test_x = torch.load('./data/SHD/shd_test_x.torch')
     shd_test_y = torch.load('./data/SHD/shd_test_y.torch').squeeze()
-    testset = TensorDataset(shd_test_x, shd_test_y)
-    # test_loader = DataLoader(testset, batch_size=batch_size, shuffle=True)
     test_loader = classwise_loader(shd_test_x, shd_test_y, 20, batch_size=batch_size)
     return train_loader, test_loader
 

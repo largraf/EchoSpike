@@ -156,7 +156,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
     torch.set_grad_enabled(False)
     torch.manual_seed(123)
     clapp_loss_hist = []
-    print_interval = 100
+    print_interval = 400
     current_epoch_loss = 1e5 # some large number
     # training loop
     optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp])
@@ -272,92 +272,49 @@ def test_sample_wise(net, testloader, device):
             loss_list.append(loss)
     return torch.stack(loss_list), loss_per_class, mem_history, target_list, clapp_losses
 
-def test_classwise(net, testloader, device):
+def test_classwise(net, testloader, device, batch_size=1, temporal=False):
     torch.set_grad_enabled(False)
-    loss_per_class = testloader.num_classes*[0]
     net.eval()
     spk_history = []
     target_list = []
-    loss_list = []
     clapp_losses = []
-    true_false = []
 
     bf = 0
-    target = torch.randint(testloader.num_classes, (1,)).item()
+    target = [torch.randint(testloader.num_classes, (1,)).item() for _ in range(batch_size)]
     while True:
-        data, target = testloader.next_item(int(target), contrastive=(bf==-1))
+        data, target = testloader.next_item(target, contrastive=(bf==-1))
         target_list.append(target)
         net.reset()
-        data = data.squeeze(0).float().to(device)
+        data = data.float().to(device)
         target = target.to(device)
         logit_list = []
         activation_list = []
+        if temporal:
+            clapp_loss_sample = torch.zeros(len(net.clapp), device=device)
         for step in range(data.shape[0]):
             factor = bf if step == data.shape[0]-1 else 0
-            out_spk, activations, clapp_loss = net(data[step].flatten(), target, torch.tensor(factor, device=device))
+            if temporal:
+                factor = bf
+            out_spk, activations, clapp_loss = net(data[step], target, torch.tensor(factor, device=device))
             logit_list.append(out_spk[-1])
             activation_list.append(torch.stack(out_spk))
-            if factor != 0:
+            if factor != 0 and not temporal:
                 clapp_losses.append(clapp_loss)
+            elif temporal:
+                clapp_loss_sample += clapp_loss
+        if temporal:
+            clapp_losses.append(clapp_loss_sample)
         spk_history.append(torch.stack(activation_list).sum(axis=0))
         coin_flip = torch.rand(1) > 0.5
         if coin_flip:
             bf = -1
         else:
             bf = 1
-        pred = torch.stack(logit_list).sum(axis=0)
-        prediction = torch.argmax(pred)
-        if prediction.sum() > 0:
-            pass
-        true_false.append(prediction == target.squeeze())
-        loss = torch.nn.functional.cross_entropy(pred, target.squeeze().long())
-        loss_per_class[target.long()] += loss
-        loss_list.append(loss)
-        if len(loss_list) > len(testloader):
+        if len(clapp_losses)*batch_size > len(testloader):
             break
-    if net.has_out_proj:
-        print(f'Accuracy: {100*sum(true_false)/len(true_false):.2f}%')
-    return torch.stack(loss_list), loss_per_class, spk_history, target_list, clapp_losses
+    return spk_history, target_list, clapp_losses
 
 
-def test_SHD(net, testloader, device):
-    torch.set_grad_enabled(False)
-    loss_per_class = testloader.num_classes*[0]
-    net.eval()
-    mem_history = []
-    target_list = []
-    loss_list = []
-    clapp_losses = []
-    true_false = []
-
-    bf = 0
-    target = torch.randint(testloader.num_classes, (1,)).item()
-    while True:
-        data, target = testloader.next_item(int(target), contrastive=True)
-        target_list.append(target)
-        net.reset()
-        data = data.squeeze(0).float().to(device)
-        target = target.to(device)
-        logit_list = []
-        activation_list = []
-        for step in range(data.shape[0]):
-            out_spk, activations, clapp_loss = net(data[step].flatten(), target, torch.tensor(bf, device=device))
-            logit_list.append(out_spk[-1])
-            activation_list.append(torch.stack(out_spk))
-        mem_history.append(torch.stack(activation_list).sum(axis=0))
-        pred = torch.stack(logit_list).sum(axis=0)
-        prediction = torch.argmax(pred)
-        if prediction.sum() > 0:
-            pass
-        true_false.append(prediction == target.squeeze())
-        loss = torch.nn.functional.cross_entropy(pred, target.squeeze().long())
-        loss_per_class[target.long()] += loss
-        loss_list.append(loss)
-        if len(loss_list) > len(testloader):
-            break
-    if net.has_out_proj:
-        print(f'Accuracy: {100*sum(true_false)/len(true_false):.2f}%')
-    return torch.stack(loss_list), loss_per_class, mem_history, target_list, clapp_losses
 
 def train_out_projection(SNN, train_loader, epochs, device, from_layer=-1):
     # Gradient calculation + weight update

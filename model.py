@@ -108,7 +108,7 @@ class CLAPP_SRNN(nn.Module):
             incr_spks = [0]*len(self.clapp)
         with torch.no_grad():
             mems = len(self.clapp)*[None]
-            losses = torch.zeros(len(self.clapp))
+            losses = torch.zeros(len(self.clapp), device=inp.device)
             if hasattr(self, 'hidden_state'):
                 if self.hidden_state is None:
                     self.hidden_state = [torch.zeros(inp.shape[0], self.num_hidden[i], device=inp.device) for i in range(len(self.num_hidden))]
@@ -152,7 +152,9 @@ class CLAPP_layer_temporal(nn.Module):
         self.fc = nn.Linear(num_inputs, num_hidden, bias=False)
         with torch.no_grad():
             # too small weights create no spikes at all -> no learning
-            self.fc.weight *= 5
+            k = 1/torch.sqrt(torch.tensor(num_inputs))
+            self.fc.weight = nn.init.uniform_(self.fc.weight, -k, k)
+            self.fc.weight[:, -num_hidden:] += torch.eye(num_hidden)
         self.lif = snn.Leaky(beta=beta) # , reset_mechanism='zero')
         self.beta = beta
         self.n_time_steps = n_time_steps
@@ -441,8 +443,8 @@ class CLAPP_out(nn.Module):
         spk, self.mem = self.lif(cur, self.mem)
         if self.training:
             # prediction weight update
-            target_spk = nn.functional.one_hot(target.long(), num_classes=self.num_out).flatten().float()
-            dW = torch.outer((target_spk - spk) * self._surrogate(self.mem -1), inp)
+            target_spk = nn.functional.one_hot(target.long(), num_classes=self.num_out).float()
+            dW = torch.einsum('bi, bj -> bij' , (target_spk - spk) * self._surrogate(self.mem -1), inp).mean(axis=0)
             if self.out_proj.weight.grad is not None:
                 self.out_proj.weight.grad -= dW
             else:
