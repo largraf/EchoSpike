@@ -56,7 +56,7 @@ class CLAPP_SNN(nn.Module):
         return out_spk, torch.stack(spike_traces), losses
 
 
-class CLAPP_SRNN(nn.Module):
+class CLAPP_RSNN(nn.Module):
     def __init__(self, num_inputs, num_hidden: list, num_outputs, device='cuda',
                  beta=0.96, n_time_steps=100, out_proj=True, recurrent=True):
         """
@@ -95,9 +95,9 @@ class CLAPP_SRNN(nn.Module):
         if recurrent:
             self.hidden_state = None#[torch.zeros(num_hidden[i], device=device) for i in range(len(num_hidden))]
     
-    def reset(self):
+    def reset(self, bf):
         for clapp_layer in self.clapp:
-            clapp_layer.reset()
+            clapp_layer.reset(bf)
         if self.has_out_proj:
             self.out_proj.reset()
         if hasattr(self, 'hidden_state'):
@@ -137,7 +137,7 @@ class CLAPP_SRNN(nn.Module):
         return out_spk, torch.stack(mems), losses
 
 class CLAPP_layer_temporal(nn.Module):
-    def __init__(self, num_inputs:int, num_hidden: int, beta:float, n_time_steps: int=10):
+    def __init__(self, num_inputs:int, num_hidden: int, beta:float, n_time_steps: int=100):
         """
         Initializes a CLAPP layer for static data.
 
@@ -163,11 +163,30 @@ class CLAPP_layer_temporal(nn.Module):
         self.trace_decay = beta
         # self.pred = nn.Linear(num_hidden, num_hidden, bias=False)
         self.debug_counter = [0, 0, 0, 0]
-        self.reset()
+        self.current_dW = None
+        self.sample_loss = None
+        self.reset(0)
 
-    def reset(self):
+    def reset(self, bf):
         self.mem = self.lif.init_leaky()
         if self.spk_trace is not None:
+            if self.sample_loss is not None:
+                if bf == 1:
+                    self.sample_loss += 1e-2*self.n_time_steps*self.spk_trace.shape[-1]
+                    dL = (self.sample_loss > 0).float()
+                    self.debug_counter[0] += dL.sum()
+                    self.debug_counter[1] += self.sample_loss.sum()
+                else:
+                    dL = (self.sample_loss > 0).float()
+                    self.debug_counter[2] += dL.sum()
+                    self.debug_counter[3] += self.sample_loss.sum()
+                self.current_dW = torch.einsum('bvw,b->vw', self.current_dW, dL)
+                if self.fc.weight.grad is None:
+                    self.fc.weight.grad = -self.current_dW
+                else:
+                    self.fc.weight.grad -= self.current_dW
+            self.current_dW = None
+            self.sample_loss = None
             self.prev_spk_trace = self.spk_trace
             self.spk_trace = None
             self.inp_trace = None
@@ -175,14 +194,14 @@ class CLAPP_layer_temporal(nn.Module):
     def CLAPP_loss(self, bf, current):
         fb = self.prev_spk_trace - self.prev_spk_trace.mean(axis=-1).unsqueeze(-1)
         if bf == 1:
-            return torch.relu(0.01*fb.shape[-1] - (current * fb).sum(axis=-1))
+            return -(current * fb).sum(axis=-1)
         else:
-            return torch.relu((current * fb).sum(axis=-1))
+            return (current * fb).sum(axis=-1)
 
     @staticmethod
     def _surrogate(x, loss):
         surr = 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
-        return torch.einsum('b,bn->bn', loss > 0, surr)
+        return surr#return torch.einsum('b,bn->bn', loss > 0, surr)
 
     def _update_trace(self, trace, spk, decay=True):
         # non decaying trace for static data
@@ -206,20 +225,17 @@ class CLAPP_layer_temporal(nn.Module):
                 spk = torch.clamp(spk + rand_spks, max=1)
             if self.prev_spk_trace is not None and bf != 0:
                 loss = self.CLAPP_loss(bf, spk)
-                if bf == 1:
-                    self.debug_counter[0] += (loss > 0).sum()
-                    self.debug_counter[1] += loss.mean()
+                if self.sample_loss is not None:
+                    self.sample_loss += loss
                 else:
-                    self.debug_counter[2] += (loss > 0).sum()
-                    self.debug_counter[3] += loss.mean()
+                    self.sample_loss = loss
 
                 # update the weights according to adaptation from CLAPP learning rule
-                dW = bf * torch.einsum('bi, bj->bij', self.prev_spk_trace * CLAPP_layer_temporal._surrogate(self.mem - 1, loss), self.inp_trace).mean(axis=0)
-
-                if self.fc.weight.grad is None:
-                    self.fc.weight.grad = -dW
+                if self.current_dW is not None:
+                    self.current_dW += bf * torch.einsum('bi, bj->bij', self.prev_spk_trace * CLAPP_layer_temporal._surrogate(self.mem - 1, loss), self.inp_trace)
                 else:
-                    self.fc.weight.grad -= dW
+                    self.current_dW = bf * torch.einsum('bi, bj->bij', self.prev_spk_trace * CLAPP_layer_temporal._surrogate(self.mem - 1, loss), self.inp_trace)
+
         elif bf != 0 and self.prev_spk_trace is not None:
             loss = self.CLAPP_loss(bf, spk)
         return spk, self.spk_trace, loss.mean()

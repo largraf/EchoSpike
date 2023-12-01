@@ -159,7 +159,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
     print_interval = 400
     current_epoch_loss = 1e5 # some large number
     # training loop
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-2} for par in net.clapp])
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp])
     optimizer_clapp.zero_grad()
     net.train()
     bf = 0
@@ -167,7 +167,6 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
     spks = torch.zeros(len(net.clapp)+1, device=device)
     while True:
         data, target = trainloader.next_item(target, contrastive=(bf==-1))
-        net.reset()
         data = data.float().to(device)
         target = target.to(device)
         if temporal:
@@ -185,6 +184,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
             clapp_loss_hist.append(clapp_sample_loss/data.shape[0]) 
         else:
             clapp_loss_hist.append(clapp_loss)
+        net.reset(bf)
         if bf == -1:
             # ensure that there was one predictive and one contrastive batch, before weight update
             optimizer_clapp.step()
@@ -284,7 +284,6 @@ def test_classwise(net, testloader, device, batch_size=1, temporal=False):
     while True:
         data, target = testloader.next_item(target, contrastive=(bf==-1))
         target_list.append(target)
-        net.reset()
         data = data.float().to(device)
         target = target.to(device)
         logit_list = []
@@ -305,6 +304,7 @@ def test_classwise(net, testloader, device, batch_size=1, temporal=False):
         if temporal:
             clapp_losses.append(clapp_loss_sample)
         spk_history.append(torch.stack(activation_list).sum(axis=0))
+        net.reset(bf)
         coin_flip = torch.rand(1) > 0.5
         if coin_flip:
             bf = -1
