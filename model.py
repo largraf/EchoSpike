@@ -181,6 +181,7 @@ class CLAPP_layer_temporal(nn.Module):
                     self.debug_counter[0] += dL.sum()
                     self.debug_counter[1] += self.sample_loss.sum()
                 else:
+                    self.sample_loss -= 1e-2*self.n_time_steps*self.spk_trace.shape[-1]
                     dL = (self.sample_loss > 0).float()
                     self.debug_counter[2] += dL.sum()
                     self.debug_counter[3] += self.sample_loss.sum()
@@ -213,10 +214,14 @@ class CLAPP_layer_temporal(nn.Module):
     def _update_trace(self, trace, spk, decay=True):
         # non decaying trace for static data
         if trace is None:
-            trace = spk
+            if decay:
+                trace = spk
+            else:
+                trace = spk / self.n_time_steps
+        elif decay:
+            trace = self.beta * trace + spk
         else:
-            beta = self.beta if decay else 1
-            trace = beta * trace + spk/self.n_time_steps
+            trace = trace + spk / self.n_time_steps
         return trace
      
     def forward(self, inp, bf, dropin=0):
