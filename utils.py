@@ -156,6 +156,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
     torch.set_grad_enabled(False)
     torch.manual_seed(123)
     clapp_loss_hist = []
+    clapp_accuracies = []
     print_interval = 400
     current_epoch_loss = 1e5 # some large number
     # training loop
@@ -184,7 +185,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
             clapp_loss_hist.append(clapp_sample_loss/data.shape[0]) 
         else:
             clapp_loss_hist.append(clapp_loss)
-        net.reset(bf)
+        clapp_accuracies.append(net.reset(bf))
         if bf == -1:
             # ensure that there was one predictive and one contrastive batch, before weight update
             optimizer_clapp.step()
@@ -194,6 +195,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
         epoch = step // len(trainloader)
         if step % print_interval < batch_size and len(clapp_loss_hist) > 1:
             print(f"Epoch {epoch}, Step {step} \nCLAPP Loss: {torch.stack(clapp_loss_hist[-print_interval//batch_size:]).mean(axis=0)}")
+            print(f"CLAPP Acc: {torch.stack(clapp_accuracies[-print_interval//batch_size:]).mean(axis=0)}")
             print(f"Spks: {spks*batch_size/print_interval}")
             spks = torch.zeros(len(net.clapp)+1, device=device)
         if epoch >= epochs:

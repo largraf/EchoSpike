@@ -96,12 +96,15 @@ class CLAPP_RSNN(nn.Module):
             self.hidden_state = None#[torch.zeros(num_hidden[i], device=device) for i in range(len(num_hidden))]
     
     def reset(self, bf):
-        for clapp_layer in self.clapp:
-            clapp_layer.reset(bf)
+        clapp_accuracies = torch.zeros(len(self.clapp))
+        for i, clapp_layer in enumerate(self.clapp):
+            clapp_accuracies[i] = clapp_layer.reset(bf)
         if self.has_out_proj:
             self.out_proj.reset()
         if hasattr(self, 'hidden_state'):
-            self.hidden_state = None#[torch.zeros_like(self.hidden_state[i], device=self.hidden_state[i].device) for i in range(len(self.hidden_state))]
+            self.hidden_state = None
+        return clapp_accuracies
+
 
     def forward(self, inp, target, bf: int, freeze: list=[], incr_spks=None):
         if incr_spks == None:
@@ -169,6 +172,7 @@ class CLAPP_layer_temporal(nn.Module):
 
     def reset(self, bf):
         self.mem = self.lif.init_leaky()
+        dL = None
         if self.spk_trace is not None:
             if self.sample_loss is not None:
                 if bf == 1:
@@ -190,6 +194,9 @@ class CLAPP_layer_temporal(nn.Module):
             self.prev_spk_trace = self.spk_trace
             self.spk_trace = None
             self.inp_trace = None
+        if dL is not None:
+            return dL.sum()/len(dL)
+        else: return 0
     
     def CLAPP_loss(self, bf, current):
         fb = self.prev_spk_trace - self.prev_spk_trace.mean(axis=-1).unsqueeze(-1)
