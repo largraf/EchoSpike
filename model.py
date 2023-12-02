@@ -120,7 +120,8 @@ class CLAPP_RSNN(nn.Module):
                 clapp_in = inp
             out_spk = []
             for idx, clapp_layer in enumerate(self.clapp):
-                spk, mem, loss = clapp_layer(clapp_in, bf)
+                factor = bf if not idx in freeze else 0
+                spk, mem, loss = clapp_layer(clapp_in, factor)
                 if idx < len(self.clapp) - 1:
                     if hasattr(self, 'hidden_state'):
                         clapp_in = torch.cat((spk, self.hidden_state[idx+1]), dim=1)
@@ -181,7 +182,7 @@ class CLAPP_layer_temporal(nn.Module):
                     self.debug_counter[0] += dL.sum()
                     self.debug_counter[1] += self.sample_loss.sum()
                 else:
-                    self.sample_loss -= 1e-2*self.n_time_steps*self.spk_trace.shape[-1]
+                    self.sample_loss -= 5e-3*self.n_time_steps*self.spk_trace.shape[-1]
                     dL = (self.sample_loss > 0).float()
                     self.debug_counter[2] += dL.sum()
                     self.debug_counter[3] += self.sample_loss.sum()
@@ -196,7 +197,7 @@ class CLAPP_layer_temporal(nn.Module):
             self.spk_trace = None
             self.inp_trace = None
         if dL is not None:
-            return dL.sum()/len(dL)
+            return 1 - dL.sum()/len(dL)
         else: return 0
     
     def CLAPP_loss(self, bf, current):
@@ -230,7 +231,7 @@ class CLAPP_layer_temporal(nn.Module):
         spk, self.mem = self.lif(cur, self.mem)
         loss = torch.tensor(0.)
         self.spk_trace = self._update_trace(self.spk_trace, spk, decay=False)
-        if self.training:
+        if self.training and bf != 0:
             self.inp_trace = self._update_trace(self.inp_trace, inp)
             if dropin > 0:
                 rand_spks = torch.bernoulli(torch.ones_like(spk) * dropin)
@@ -455,14 +456,16 @@ class CLAPP_out(nn.Module):
         self.out_proj = nn.Linear(num_inputs, num_out, bias=False)
         self.lif = snn.Leaky(beta=beta)#, reset_mechanism='zero')
         self.num_out = num_out
+        self.dW = None
         self.reset()
 
-    def reset(self):
+    def reset(self, dL=None):
         self.mem = self.lif.init_leaky()
-    
-    def _dL(self, loss):
-        return loss > 0
-    
+        if self.dW is not None and dL is not None:
+            dW = torch.einsum('bvw,b->vw', self.dW, dL)
+            self.out_proj.weight.grad = -dW
+        self.dW = None
+     
     def _surrogate(self, x):
         return 1 / (torch.pi * (1 + (torch.pi * x) ** 2))
 
@@ -472,11 +475,10 @@ class CLAPP_out(nn.Module):
         if self.training:
             # prediction weight update
             target_spk = nn.functional.one_hot(target.long(), num_classes=self.num_out).float()
-            dW = torch.einsum('bi, bj -> bij' , (target_spk - spk) * self._surrogate(self.mem -1), inp).mean(axis=0)
-            if self.out_proj.weight.grad is not None:
-                self.out_proj.weight.grad -= dW
+            if self.dW is None:
+                self.dW = torch.einsum('bi, bj -> bij' , (target_spk - spk) * self._surrogate(self.mem -1), inp)
             else:
-                self.out_proj.weight.grad = -dW
+                self.dW += torch.einsum('bi, bj -> bij' , (target_spk - spk) * self._surrogate(self.mem -1), inp)
 
         return spk, self.mem
 

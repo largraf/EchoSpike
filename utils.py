@@ -160,7 +160,7 @@ def train_samplewise_clapp(net, trainloader, epochs, device, model_name, batch_s
     print_interval = 400
     current_epoch_loss = 1e5 # some large number
     # training loop
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-3} for par in net.clapp])
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-5} for par in net.clapp])
     optimizer_clapp.zero_grad()
     net.train()
     bf = 0
