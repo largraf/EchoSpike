@@ -86,7 +86,7 @@ def load_classwise_NMNIST(n_time_steps, split_train=False, batch_size=1):
         test_loader (torch.utils.data.DataLoader): The data loader for the test set.
     """
     import tonic
-    from tonic import transforms
+    from tonic import transforms, DiskCachedDataset
     # load NMNIST dataset
     sensor_size = tonic.datasets.NMNIST.sensor_size
     print(sensor_size)
@@ -99,8 +99,10 @@ def load_classwise_NMNIST(n_time_steps, split_train=False, batch_size=1):
                                      transform=frame_transform, train=True, first_saccade_only=True)
     testset = tonic.datasets.NMNIST(save_to='./data',
                                     transform=frame_transform, train=False, first_saccade_only=True)
+    trainset_cached = DiskCachedDataset(trainset, cache_path="./data")
+    testset_cached = DiskCachedDataset(testset, cache_path="./data")
 
-    test_loader = classwise_loader(testset, testset.targets, 10, batch_size)
+    test_loader = classwise_loader(testset_cached, testset.targets, 10, batch_size)
 
     if split_train == True:
         # Optionally split the train set in a two split
@@ -110,10 +112,10 @@ def load_classwise_NMNIST(n_time_steps, split_train=False, batch_size=1):
         indeces_2 = shuffled_idx[int(split*len(trainset)):]
         targets_1 = torch.ones_like(shuffled_idx) * -1
         targets_1[indeces_1] = torch.tensor(trainset.targets)[indeces_1]
-        train_loader_1 = classwise_loader(trainset, targets_1, 10, batch_size)
+        train_loader_1 = classwise_loader(trainset_cached, targets_1, 10, batch_size)
         targets_2 = torch.ones_like(shuffled_idx) * -1
         targets_2[indeces_2] = torch.tensor(trainset.targets)[indeces_2]
-        train_loader_2 = classwise_loader(trainset, targets_2, 10, batch_size)
+        train_loader_2 = classwise_loader(trainset_cached, targets_2, 10, batch_size)
         return train_loader_1, train_loader_2, test_loader
 
     train_loader = classwise_loader(trainset, 10, batch_size)
