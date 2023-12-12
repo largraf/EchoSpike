@@ -1,6 +1,6 @@
 import torch
 
-def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], temporal=True):
+def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], temporal=True, online=False):
     """
     Trains a SNN.
 
@@ -23,7 +23,8 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
     print_interval = 10*batch_size
     current_epoch_loss = 1e5 # some large number
     # training loop
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-5} for par in net.clapp])
+    online_factor = 1e-2 if online else 1
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': online_factor*1e-3} for par in net.clapp])
     optimizer_clapp.zero_grad()
     net.train()
     bf = 0
@@ -44,12 +45,15 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
             spks += torch.stack([data[step].mean(), *[sp.mean() for sp in spk]])    # to analyze nr of spks
             if temporal:
                 clapp_sample_loss += clapp_loss
+            if online:
+                optimizer_clapp.step()
+                optimizer_clapp.zero_grad()
         if temporal:
             clapp_loss_hist.append(clapp_sample_loss/data.shape[0]) 
         else:
             clapp_loss_hist.append(clapp_loss)
         clapp_accuracies.append(net.reset(bf))
-        if bf == -1:
+        if bf == -1 and not online:
             # ensure that there was one predictive and one contrastive batch, before weight update
             optimizer_clapp.step()
             optimizer_clapp.zero_grad()

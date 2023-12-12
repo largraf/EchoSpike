@@ -249,18 +249,14 @@ class CLAPP_layer_temporal(nn.Module):
                     else:
                         self.current_dW = bf * torch.einsum('bi, bj->bij', self.prev_spk_trace * CLAPP_layer_temporal._surrogate(self.mem - 1, loss), self.inp_trace)
                 else:
-                    if bf == 1:
-                        loss += 0.2*self.spk_trace.shape[-1]*inp.mean()
-                        dL = loss > 0
-                        self.debug_counter[0] += dL.sum()
-                        self.debug_counter[1] += loss.sum()
-                    else:
-                        loss -= 0.1*self.spk_trace.shape[-1]*inp.mean()
-                        dL = loss > 0
-                        self.debug_counter[2] += dL.sum()
-                        self.debug_counter[3] += loss.sum()
+                    c_y = 0.2 if bf == 1 else -0.1
+                    idx = 0 if bf == 1 else 2 
+                    loss += c_y*self.spk_trace.shape[-1]*inp.mean()
+                    dL = loss > 0
                     current_dW = bf * torch.einsum('bi, bj->bij', self.prev_spk_trace * CLAPP_layer_temporal._surrogate(self.mem - 1, loss), self.inp_trace)
                     self.fc.weight.grad = -torch.einsum('bvw,b->vw', current_dW, dL.float())
+                    self.debug_counter[idx] += dL.sum()
+                    self.debug_counter[idx+1] += self.fc.weight.grad.mean()
 
         elif bf != 0 and self.prev_spk_trace is not None:
             loss = self.CLAPP_loss(bf, spk)
