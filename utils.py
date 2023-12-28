@@ -1,6 +1,6 @@
 import torch
 
-def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], online=False):
+def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], online=False, lr=1e-5):
     """
     Trains a SNN.
 
@@ -22,7 +22,7 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
     print_interval = 20*batch_size
     current_epoch_loss = 1e5 # some large number
     # training loop
-    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': 1e-5} for par in net.clapp])
+    optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': lr} for par in net.clapp])
     optimizer_clapp.zero_grad()
     net.train()
     bf = 0
@@ -57,7 +57,7 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
             optimizer_clapp.step()
             optimizer_clapp.zero_grad()
         bf = 1 if bf != 1 else -1
-        
+
         step = len(clapp_loss_hist) * batch_size
         epoch = step // len(trainloader)
         if step % print_interval < batch_size and len(clapp_loss_hist) > 1:

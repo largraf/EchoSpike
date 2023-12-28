@@ -46,7 +46,9 @@ if __name__ == '__main__':
     SNN = CLAPP_RSNN(args.n_inputs, args.n_hidden, beta=args.beta,
                      device=args.device, recurrency_type=args.recurrency_type,
                      n_time_steps=args.n_time_bins, online=args.online).to(args.device)
-    clapp_loss_hist = train(SNN, train_loader, args.epochs, args.device, args.model_name, batch_size=args.batch_size, online=args.online)
+
+    clapp_loss_hist = train(SNN, train_loader, args.epochs, args.device, args.model_name,
+                            batch_size=args.batch_size, online=args.online, lr=args.lr)
 
     # Save the model, loss history and arguments
     torch.save(SNN.state_dict(), f'models/{args.model_name}.pt')
