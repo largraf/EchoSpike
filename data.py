@@ -1,6 +1,12 @@
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 import snntorch as snn
+from torchvision.transforms import v2
+
+
+def augment_nmnist(x):
+    transform = v2.Compose([v2.RandomAffine(degrees=(-30, 30), translate=(0.1, 0.3), scale=(0.6, 1.1))])
+    return transform(x)
 
 
 class classwise_loader():
@@ -51,6 +57,7 @@ class classwise_loader():
             self.idx_per_target[ta] += 1
 
         if self.x is None:
+            # For NMNIST
             imgs = []
             targets = []
             for i in indeces:
