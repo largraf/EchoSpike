@@ -19,7 +19,7 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
     torch.set_grad_enabled(False)
     clapp_loss_hist = []
     clapp_accuracies = []
-    print_interval = 20*batch_size
+    print_interval = 100*batch_size if 'mnist' in model_name else 20*batch_size
     current_epoch_loss = 1e5 # some large number
     # training loop
     optimizer_clapp = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': lr} for par in net.clapp])
@@ -42,7 +42,7 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
                 inp_activity = data[step].mean(axis=-1)
             else:
                 inp_activity = None
-            spk, _, clapp_loss = net(data[step], None, torch.tensor(bf, device=device), freeze, inp_activity=inp_activity)
+            spk, _, clapp_loss = net(data[step], torch.tensor(bf, device=device), freeze, inp_activity=inp_activity)
             spks += torch.stack([data[step].mean(), *[sp.mean() for sp in spk]])    # to analyze nr of spks
             clapp_sample_loss += clapp_loss
             if online:
@@ -79,7 +79,7 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
     return torch.stack(clapp_loss_hist)
 
 
-def test(net, testloader, device, batch_size=1, temporal=False):
+def test(net, testloader, device, batch_size=1):
     torch.set_grad_enabled(False)
     net.eval()
     spk_history = []
@@ -95,28 +95,20 @@ def test(net, testloader, device, batch_size=1, temporal=False):
         target = target.to(device)
         logit_list = []
         activation_list = []
-        if temporal:
-            clapp_loss_sample = torch.zeros(len(net.clapp), device=device)
+        clapp_loss_sample = torch.zeros(len(net.clapp), device=device)
         for step in range(data.shape[0]):
-            factor = bf if step == data.shape[0]-1 else 0
-            if temporal:
-                factor = bf
-            out_spk, activations, clapp_loss = net(data[step], target, torch.tensor(factor, device=device))
+            out_spk, _, clapp_loss = net(data[step], torch.tensor(bf, device=device))
             logit_list.append(out_spk[-1])
-            activation_list.append(torch.stack(out_spk))
-            if factor != 0 and not temporal:
-                clapp_losses.append(clapp_loss)
-            elif temporal:
-                clapp_loss_sample += clapp_loss
-        if temporal:
-            clapp_losses.append(clapp_loss_sample)
-        spk_history.append(torch.stack(activation_list).sum(axis=0))
+            activation_list.append(out_spk)
+            clapp_loss_sample += clapp_loss
+
+        clapp_losses.append(clapp_loss_sample)
+        spk_history.append(activation_list[0])
+        for i in range(1, len(activation_list)):
+            for l in range(len(spk_history[-1])):
+                spk_history[-1][l] += activation_list[i][l]
         net.reset(bf)
-        coin_flip = torch.rand(1) > 0.5
-        if coin_flip:
-            bf = -1
-        else:
-            bf = 1
+        bf = 1 if bf != 1 else -1
         if len(clapp_losses)*batch_size > len(testloader):
             break
     return spk_history, target_list, clapp_losses

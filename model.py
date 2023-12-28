@@ -131,7 +131,7 @@ class CLAPP_layer_temporal(nn.Module):
             if self.sample_loss is not None:
                 # perform a weight update
                 if bf == 1:
-                    self.sample_loss += 5e-3*self.n_time_steps*self.spk_trace.shape[-1]
+                    self.sample_loss += 1e-2*self.n_time_steps*self.spk_trace.shape[-1]
                     dL = (self.sample_loss > 0).float()
                 else:
                     self.sample_loss -= 5e-3*self.n_time_steps*self.spk_trace.shape[-1]
@@ -145,7 +145,7 @@ class CLAPP_layer_temporal(nn.Module):
 
             self.current_dW = None
             self.sample_loss = None
-            self.prev_spk_trace = self.spk_trace
+            self.prev_spk_trace = self.spk_trace / self.spk_trace.sum(axis=-1).unsqueeze(-1)
             self.spk_trace = None
             self.inp_trace = None
         if dL is not None:
@@ -153,11 +153,11 @@ class CLAPP_layer_temporal(nn.Module):
         else: return 0
     
     def CLAPP_loss(self, bf, current):
-        fb = self.prev_spk_trace - self.prev_spk_trace.mean(axis=-1).unsqueeze(-1)
+        # fb = self.prev_spk_trace - self.prev_spk_trace.mean(axis=-1).unsqueeze(-1)
         if bf == 1:
-            return -(current * fb).sum(axis=-1)
+            return -(current * self.prev_spk_trace).sum(axis=-1)
         else:
-            return (current * fb).sum(axis=-1)
+            return (current * self.prev_spk_trace).sum(axis=-1)
 
     @staticmethod
     def _surrogate(x):
