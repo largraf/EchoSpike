@@ -1,35 +1,40 @@
 from utils import train
 from data import load_classwise_PMNIST, load_classwise_NMNIST, load_SHD
-from model import CLAPP_RSNN
+from model import EchoSpike
 import torch
 import pickle
 
 # hyperparameters
 class Args:
     def __init__(self):
-        self.model_name = 'nmnist_3layer_allclapp'
-        self.dataset = 'nmnist'
+        self.model_name = 'shd_stacked_paper'
+        self.dataset = 'shd'
         self.online = False
-        self.device = 'cpu'
-        self.recurrency_type = 'none'
+        self.device = 'cuda'
+        self.recurrency_type = 'stacked'
         self.lr = 1e-4
-        self.epochs = 3
-        self.batch_size = 64
+        self.epochs = 1000
+        self.batch_size = 64 # 64 saccade and 64 predictive before weight update -> 128
         self.n_hidden = 3*[512]
-        self.beta = 0.9
         if self.dataset == 'nmnist':
+            self.c_y = [1e-4, -1e-4]
             self.n_inputs = 2*34*34 #28*28 # 700
             self.n_outputs = 10
             self.n_time_bins = 10
+            self.beta = 0.9
         elif self.dataset == 'pmnist':
+            self.c_y = [1e-4, -1e-4]
             self.n_inputs = 28*28
             self.n_outputs = 10
             self.poisson_scale = 0.8
             self.n_time_bins = 10
+            self.beta = 0.9
         elif self.dataset == 'shd':
+            self.c_y = [8e-4, -4e-4]
             self.n_inputs = 700
             self.n_outputs = 20
             self.n_time_bins = 100
+            self.beta = 0.95
 
 if __name__ == '__main__':
     args = Args()
@@ -43,16 +48,16 @@ if __name__ == '__main__':
         train_loader, test_loader = load_SHD(batch_size=args.batch_size)
 
     # train model
-    SNN = CLAPP_RSNN(args.n_inputs, args.n_hidden, beta=args.beta,
+    SNN = EchoSpike(args.n_inputs, args.n_hidden, c_y= args.c_y, beta=args.beta,
                      device=args.device, recurrency_type=args.recurrency_type,
                      n_time_steps=args.n_time_bins, online=args.online).to(args.device)
 
-    clapp_loss_hist = train(SNN, train_loader, args.epochs, args.device, args.model_name,
+    loss_hist = train(SNN, train_loader, args.epochs, args.device, args.model_name,
                             batch_size=args.batch_size, online=args.online, lr=args.lr)
 
     # Save the model, loss history and arguments
     torch.save(SNN.state_dict(), f'models/{args.model_name}.pt')
-    torch.save(clapp_loss_hist, f'models/{args.model_name}_clapp_loss_hist.pt')
+    torch.save(loss_hist, f'models/{args.model_name}_loss_hist.pt')
     with open(f'models/{args.model_name}_args.pkl', 'wb') as f:
         pickle.dump(args, f)
 
