@@ -7,15 +7,16 @@ import pickle
 # hyperparameters
 class Args:
     def __init__(self):
-        self.model_name = 'shd_stacked_paper'
+        self.model_name = 'test'
         self.dataset = 'shd'
-        self.online = False
-        self.device = 'cuda'
-        self.recurrency_type = 'stacked'
+        self.online = True
+        self.device = 'cpu'
+        self.recurrency_type = 'none'
         self.lr = 1e-4
-        self.epochs = 1000
-        self.batch_size = 64 # 64 saccade and 64 predictive before weight update -> 128
-        self.n_hidden = 3*[512]
+        self.epochs = 1
+        self.augment = True
+        self.batch_size = 128 # 64 saccade and 64 predictive before weight update -> 128
+        self.n_hidden = 4*[512]
         if self.dataset == 'nmnist':
             self.c_y = [1e-4, -1e-4]
             self.n_inputs = 2*34*34 #28*28 # 700
@@ -30,7 +31,7 @@ class Args:
             self.n_time_bins = 10
             self.beta = 0.9
         elif self.dataset == 'shd':
-            self.c_y = [8e-4, -4e-4]
+            self.c_y = [8e-4, -4e-4] # only for not online
             self.n_inputs = 700
             self.n_outputs = 20
             self.n_time_bins = 100
@@ -53,7 +54,7 @@ if __name__ == '__main__':
                      n_time_steps=args.n_time_bins, online=args.online).to(args.device)
 
     loss_hist = train(SNN, train_loader, args.epochs, args.device, args.model_name,
-                            batch_size=args.batch_size, online=args.online, lr=args.lr)
+                            batch_size=args.batch_size, online=args.online, lr=args.lr, augment=args.augment)
 
     # Save the model, loss history and arguments
     torch.save(SNN.state_dict(), f'models/{args.model_name}.pt')

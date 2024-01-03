@@ -8,6 +8,11 @@ def augment_nmnist(x):
     transform = v2.Compose([v2.RandomAffine(degrees=(-30, 30), translate=(0.1, 0.3), scale=(0.6, 1.1))])
     return transform(x)
 
+def augment_shd(x):
+    x = x.transpose(0, 1)
+    transform = v2.RandomAffine(degrees = 0, translate = (0.1, 0.1))
+    return transform(x).transpose(0, 1)
+
 
 class classwise_loader():
     def __init__(self, x, y, num_classes, batch_size=1):

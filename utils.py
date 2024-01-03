@@ -1,6 +1,7 @@
 import torch
+from data import augment_shd
 
-def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], online=False, lr=1e-5):
+def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], online=False, lr=1e-5, augment=False):
     """
     Trains a SNN.
 
@@ -33,6 +34,8 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
         # Train loop
         data, target = trainloader.next_item(target, contrastive=(bf==-1))
         data = data.float().to(device)
+        if augment:
+            data = augment_shd(data)
         target = target.to(device)
         sample_loss = torch.zeros(len(net.layers), device=device)
 
@@ -154,7 +157,7 @@ def get_accuracy(SNN, out_projs, dataloader, device):
         for i, logit in enumerate(logits):
             pred = logit.argmax(axis=-1)
             correct[i] += int((pred == target).sum())
-            total += len(pred)
+        total += inp.shape[0]
         # for the last layer create the prediction matrix
         for j in range(pred.shape[0]):
             pred_matrix[int(target[j]), int(pred[j])] += 1
