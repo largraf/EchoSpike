@@ -130,6 +130,7 @@ class EchoSpike_layer(nn.Module):
         self.debug_counter = [0, 0, 0, 0]
         self.current_dW = None
         self.sample_loss = None
+        self.acc = 0
         self.reset(0)
 
     def reset(self, bf):
@@ -143,6 +144,7 @@ class EchoSpike_layer(nn.Module):
         """
         self.mem = self.lif.init_leaky()
         dL = None
+        acc = 0
         if self.spk_trace is not None:
             if self.sample_loss is not None:
                 # perform a weight update
@@ -158,7 +160,10 @@ class EchoSpike_layer(nn.Module):
                         self.fc.weight.grad = -self.current_dW
                     else:
                         self.fc.weight.grad -= self.current_dW
-
+                    acc = 1 - dL.mean()
+                else:
+                    acc = 1 - self.acc
+            self.acc = 0
             self.current_dW = None
             self.sample_loss = None
             norm = self.spk_trace.sum(axis=-1).unsqueeze(-1)
@@ -166,9 +171,8 @@ class EchoSpike_layer(nn.Module):
             self.prev_spk_trace = self.spk_trace / norm
             self.spk_trace = None
             self.inp_trace = None
-        if dL is not None:
-            return 1 - dL.mean()
-        else: return 0
+        return acc
+
     
     def loss(self, bf, current):
         # fb = self.prev_spk_trace - self.prev_spk_trace.mean(axis=-1).unsqueeze(-1)
@@ -238,12 +242,13 @@ class EchoSpike_layer(nn.Module):
                 else:
                     # Online Learning Rule
                     online_loss = -bf * (spk * self.prev_spk_trace).sum(axis=-1)
-                    factor = 2 if bf == 1 else 1 # large factor makes predictive harder and contrastive easier leading to less sparse activity
+                    factor = 1.5 if bf == 1 else 1.5 # large factor makes predictive harder and contrastive easier leading to less sparse activity
                     idx = 0 if bf == 1 else 2
                     if inp_activity is None:
                         inp_activity = inp.mean(axis=-1)
-                    online_loss += factor*bf*self.prev_spk_trace.mean(axis=-1)*self.spk_trace.shape[-1]*inp_activity
+                    online_loss += factor*bf*inp_activity
                     dL = (online_loss > 0) * (inp_activity > 0.05)
+                    self.acc = max(self.acc, dL.float().mean())
                     current_dW = bf * torch.einsum('bi, bj->bij', self.prev_spk_trace * EchoSpike_layer._surrogate(self.mem - 1), self.inp_trace)
                     self.fc.weight.grad = -torch.einsum('bvw,b->vw', current_dW, dL.float())
                     self.debug_counter[idx] += dL.sum()

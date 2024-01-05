@@ -21,7 +21,6 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
     loss_hist = []
     accuracies = []
     print_interval = 100*batch_size if 'mnist' in model_name else 40*batch_size
-    current_epoch_loss = 1e5 # some large number
     # training loop
     optimizer = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': lr} for par in net.layers])
     optimizer.zero_grad()
@@ -72,12 +71,10 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
         if epoch >= epochs:
             break
         if step % len(trainloader) < batch_size and epoch % 20 == 0:
-            # save checkpoint if performance improves
-            last_epoch_loss = current_epoch_loss
-            current_epoch_loss = torch.stack(loss_hist[-len(trainloader)//batch_size:]).mean().item()
+            # save checkpoint
+            current_epoch_loss = torch.stack(loss_hist[-20*len(trainloader)//batch_size:]).mean().item()
             print(f'epoch loss: {current_epoch_loss}')
-            if current_epoch_loss < last_epoch_loss:
-                torch.save(net.state_dict(), f'models/{model_name}_epoch{epoch}.pt')
+            torch.save(net.state_dict(), f'models/{model_name}_epoch{epoch}.pt')
             
     return torch.stack(loss_hist)
 
