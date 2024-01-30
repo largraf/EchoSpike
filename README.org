@@ -1,1 +1,2 @@
-* EchoSpike
+* EchoSpike Predictive Plasticity (ESPP):  Unleashing the Potential of Deep Spiking Networks
+This is the GitHub repository for the paper "EchoSpike Predictive Plasticity:  Unleashing the Potential of Deep Spiking Networks"

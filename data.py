@@ -10,7 +10,7 @@ def augment_nmnist(x):
 
 def augment_shd(x):
     x = x.transpose(0, 1)
-    transform = v2.RandomAffine(degrees = 0, translate = (0.1, 0.1))
+    transform = v2.RandomAffine(degrees = 0, translate = (0.05, 0.05))
     return transform(x).transpose(0, 1)
 
 
@@ -75,6 +75,7 @@ class classwise_loader():
 
 def load_SHD(batch_size=1):
     # load SHD dataset
+    # Note: SHD dataset originally from tonic, but due to a bug on the cluster I had to first download it locally
     shd_train_x = torch.load('./data/SHD/shd_train_x.torch')
     shd_train_y = torch.load('./data/SHD/shd_train_y.torch').squeeze()
     train_loader = classwise_loader(shd_train_x, shd_train_y, 20, batch_size=batch_size)

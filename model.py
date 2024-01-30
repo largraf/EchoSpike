@@ -4,7 +4,7 @@ import snntorch as snn
 
 
 class EchoSpike(nn.Module):
-    def __init__(self, num_inputs, num_hidden: list, c_y=[1e-4, -1e-4], beta=0.95, n_time_steps=100, recurrency_type='none', device='cuda', online=False):
+    def __init__(self, num_inputs, num_hidden: list, c_y=[1e-4, -1e-4], beta=0.95, n_time_steps=100, recurrency_type='none', device='cuda', online=False, inp_thr=0.05):
         """
         Initializes the EchoSpike SNN with the given parameters.
 
@@ -22,29 +22,28 @@ class EchoSpike(nn.Module):
         self.recurrency_type = recurrency_type
         self.device = device
 
-        # Initialized the EchoSpike layers with shapes from num_hidden
+        # Initialized the EchoSpike layers with shapes from num_hidden and type of recurrency
         if self.recurrency_type == 'none':
-            self.layers = nn.ModuleList([EchoSpike_layer(num_inputs, num_hidden[0], beta, n_time_steps=n_time_steps, online=online, c_y=c_y)])
+            layer_inputs = [num_inputs]
             for idx_hidden in range(1, len(num_hidden)):
-                self.layers.append(EchoSpike_layer(num_hidden[idx_hidden-1],
-                                                num_hidden[idx_hidden], beta, n_time_steps=n_time_steps, online=online, c_y=c_y))
+                layer_inputs.append(num_hidden[idx_hidden-1])
         elif self.recurrency_type == 'stacked':
-            self.layers = nn.ModuleList([EchoSpike_layer(num_inputs+num_hidden[0], num_hidden[0], beta, n_time_steps=n_time_steps, online=online, c_y=c_y)])
+            layer_inputs = [num_inputs+num_hidden[0]]
             for idx_hidden in range(1, len(num_hidden)):
-                self.layers.append(EchoSpike_layer(num_hidden[idx_hidden-1] + num_hidden[idx_hidden], num_hidden[idx_hidden], beta, n_time_steps=n_time_steps, online=online, c_y=c_y))
-
+                layer_inputs.append(num_hidden[idx_hidden-1] + num_hidden[idx_hidden])
         elif self.recurrency_type == 'full':
-            self.layers = nn.ModuleList([EchoSpike_layer(num_inputs+sum(num_hidden), num_hidden[0], beta, n_time_steps=n_time_steps, online=online, c_y=c_y)])
-            for idx_hidden in range(1, len(num_hidden)):
-                self.layers.append(EchoSpike_layer(num_inputs + sum(num_hidden), num_hidden[idx_hidden], beta, n_time_steps=n_time_steps, online=online, c_y=c_y))
+            layer_inputs = len(num_hidden)*[num_inputs+sum(num_hidden)] 
         elif self.recurrency_type == 'dt':
             # deep transition RNN: feed back last layer to first layer
-            self.layers = nn.ModuleList([EchoSpike_layer(num_inputs+num_hidden[-1], num_hidden[0], beta, n_time_steps=n_time_steps, online=online, c_y=c_y)])
+            layer_inputs = [num_inputs+num_hidden[-1]]
             for idx_hidden in range(1, len(num_hidden)):
-                self.layers.append(EchoSpike_layer(num_hidden[idx_hidden-1],
-                                                num_hidden[idx_hidden], beta, n_time_steps=n_time_steps, online=online, c_y=c_y))
+                layer_inputs.append(num_hidden[idx_hidden-1])
         else:
             raise NotImplementedError
+
+        self.layers = nn.ModuleList([])
+        for idx_hidden in range(len(num_hidden)):
+            self.layers.append(EchoSpike_layer(layer_inputs[idx_hidden], num_hidden[idx_hidden], beta, n_time_steps=n_time_steps, online=online, c_y=c_y, inp_thr=inp_thr))
 
         self.hidden_state = None    
 
@@ -101,7 +100,7 @@ class EchoSpike(nn.Module):
         return out_spk, mems, losses
 
 class EchoSpike_layer(nn.Module):
-    def __init__(self, num_inputs:int, num_hidden: int, beta:float, n_time_steps: int=100, online=False, c_y=[1e-4, -1e-4]):
+    def __init__(self, num_inputs:int, num_hidden: int, beta:float, n_time_steps: int=100, online=False, c_y=[1e-4, -1e-4], inp_thr=0.05):
         """
         Initializes an EchoSpike layer for static data.
 
@@ -118,16 +117,21 @@ class EchoSpike_layer(nn.Module):
             # too small weights create no spikes at all -> no learning
             k = 3/torch.sqrt(torch.tensor(num_inputs))
             self.fc.weight = nn.init.uniform_(self.fc.weight, -k, k)
-        self.lif = snn.Leaky(beta=beta) # , reset_mechanism='zero')
-        self.beta = beta
+        if beta < 0: # heterogenous
+            mode = torch.log(1/(1+torch.tensor(beta))) # if beta < 0: -beta is the mode of the distribution of betas
+            self.beta = mode*torch.ones(num_hidden) + torch.randn(num_hidden)
+            self.beta = torch.sigmoid(self.beta)
+            print(torch.mean(self.beta), torch.std(self.beta), torch.min(self.beta), torch.max(self.beta))
+        else:
+            self.beta = beta
+        self.lif = snn.Leaky(beta=self.beta) # , reset_mechanism='zero')
         self.n_time_steps = n_time_steps
         self.online = online
         self.inp_trace, self.spk_trace = None, None
         self.prev_spk_trace = None
-        self.trace_decay = beta
+        self.trace_decay = abs(beta)
         self.c_y = c_y
-        # self.pred = nn.Linear(num_hidden, num_hidden, bias=False)
-        self.debug_counter = [0, 0, 0, 0]
+        self.inp_thr = inp_thr
         self.current_dW = None
         self.sample_loss = None
         self.acc = 0
@@ -175,11 +179,7 @@ class EchoSpike_layer(nn.Module):
 
     
     def loss(self, bf, current):
-        # fb = self.prev_spk_trace - self.prev_spk_trace.mean(axis=-1).unsqueeze(-1)
-        if bf == 1:
-            return -(current * self.prev_spk_trace).sum(axis=-1)
-        else:
-            return (current * self.prev_spk_trace).sum(axis=-1)
+        return -bf*(current * self.prev_spk_trace).sum(axis=-1)
 
     @staticmethod
     def _surrogate(x):
@@ -241,18 +241,14 @@ class EchoSpike_layer(nn.Module):
                         self.current_dW = bf * torch.einsum('bi, bj->bij', self.prev_spk_trace * EchoSpike_layer._surrogate(self.mem - 1), self.inp_trace)
                 else:
                     # Online Learning Rule
-                    online_loss = -bf * (spk * self.prev_spk_trace).sum(axis=-1)
-                    factor = 1.5 if bf == 1 else 1.5 # large factor makes predictive harder and contrastive easier leading to less sparse activity
-                    idx = 0 if bf == 1 else 2
+                    factor = self.c_y[0] if bf == 1 else self.c_y[1] 
                     if inp_activity is None:
                         inp_activity = inp.mean(axis=-1)
-                    online_loss += factor*bf*inp_activity
-                    dL = (online_loss > 0) * (inp_activity > 0.05)
-                    self.acc = max(self.acc, dL.float().mean())
+                    loss += factor*inp_activity
+                    dL = (loss > 0) * (inp_activity > self.inp_thr)
+                    self.acc += dL.float().mean()/self.n_time_steps
                     current_dW = bf * torch.einsum('bi, bj->bij', self.prev_spk_trace * EchoSpike_layer._surrogate(self.mem - 1), self.inp_trace)
                     self.fc.weight.grad = -torch.einsum('bvw,b->vw', current_dW, dL.float())
-                    self.debug_counter[idx] += dL.sum()
-                    self.debug_counter[idx+1] += self.fc.weight.grad.mean()
 
         elif bf != 0 and self.prev_spk_trace is not None:
             loss = self.loss(bf, spk)

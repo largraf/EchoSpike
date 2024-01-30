@@ -13,29 +13,34 @@ class Args:
         self.device = 'cpu'
         self.recurrency_type = 'none'
         self.lr = 1e-4
-        self.epochs = 1
+        self.epochs = 100
         self.augment = True
         self.batch_size = 128 # 64 saccade and 64 predictive before weight update -> 128
-        self.n_hidden = 4*[512]
+        self.n_hidden = 3*[200]
         if self.dataset == 'nmnist':
-            self.c_y = [1e-4, -1e-4]
-            self.n_inputs = 2*34*34 #28*28 # 700
+            self.c_y = [1e-4, -1e-4] if not self.online else [2, -1]
+            self.inp_thr = 0.02
+            self.n_inputs = 2*34*34
             self.n_outputs = 10
             self.n_time_bins = 10
             self.beta = 0.9
         elif self.dataset == 'pmnist':
             self.c_y = [1e-4, -1e-4]
+            self.inp_thr = 0.0
             self.n_inputs = 28*28
             self.n_outputs = 10
             self.poisson_scale = 0.8
             self.n_time_bins = 10
             self.beta = 0.9
         elif self.dataset == 'shd':
-            self.c_y = [8e-4, -4e-4] # only for not online
+            self.inp_thr = 0.05
+            self.c_y = [8e-4, -4e-4] if not self.online else [1.5, -1.5]
             self.n_inputs = 700
             self.n_outputs = 20
             self.n_time_bins = 100
-            self.beta = 0.95
+            self.beta = -0.95
+        else:
+            raise NotImplementedError
 
 if __name__ == '__main__':
     args = Args()
@@ -51,7 +56,7 @@ if __name__ == '__main__':
     # train model
     SNN = EchoSpike(args.n_inputs, args.n_hidden, c_y= args.c_y, beta=args.beta,
                      device=args.device, recurrency_type=args.recurrency_type,
-                     n_time_steps=args.n_time_bins, online=args.online).to(args.device)
+                     n_time_steps=args.n_time_bins, online=args.online, inp_thr=args.inp_thr).to(args.device)
 
     loss_hist = train(SNN, train_loader, args.epochs, args.device, args.model_name,
                             batch_size=args.batch_size, online=args.online, lr=args.lr, augment=args.augment)

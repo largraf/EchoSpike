@@ -1,5 +1,8 @@
 import torch
 from data import augment_shd
+import numpy as np
+from tqdm.notebook import trange
+from model import simple_out
 
 def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], online=False, lr=1e-5, augment=False):
     """
@@ -65,7 +68,8 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
         if step % print_interval < batch_size and len(loss_hist) > 1:
             # print loss and accuracy
             print(f"Epoch {epoch}, Step {step} \nEchoSpike Loss: {torch.stack(loss_hist[-print_interval//batch_size:]).mean(axis=0)}")
-            print(f"Acc: {torch.stack(accuracies[-print_interval//batch_size:]).mean(axis=0)}")
+            print(f"Acc: {torch.stack(accuracies).mean(axis=0)}")
+            accuracies = []
             print(f"Spks: {spks*batch_size/print_interval}")
             spks = torch.zeros(len(net.layers)+1, device=device)
         if epoch >= epochs:
@@ -113,7 +117,7 @@ def test(net, testloader, device, batch_size=1):
             break
     return spk_history, target_list, losses
 
-def get_accuracy(SNN, out_projs, dataloader, device):
+def get_accuracy(SNN, out_projs, dataloader, device, cat=False):
     """Get the accuracy of the SNN on the given dataset.
 
     Args:
@@ -146,7 +150,10 @@ def get_accuracy(SNN, out_projs, dataloader, device):
             spk_step, _, _ = SNN(data_step, 0)
             spk_step = [data_step, *spk_step]
             for i, out_proj in enumerate(out_projs):
-                out, mem = out_proj(spk_step[i], target)
+                if cat:
+                    out, mem = out_proj(torch.cat(spk_step[:i+1], axis=-1), target)
+                else:
+                    out, mem = out_proj(spk_step[i], target)
                 if no_spk:
                     logits[i] = mem
                 else:
@@ -170,3 +177,101 @@ def get_accuracy(SNN, out_projs, dataloader, device):
         accs.append(correct[i+1])
 
     return accs, pred_matrix
+
+def train_out_proj_fast(SNN, args, epochs, batch, snn_samples, targets, cat=False, lr=1e-3):
+    # train output projections from all layers (and no layer)
+    losses_out = []
+    beta = 1.0
+    print_interval = 10*batch
+    out_projs = [simple_out(700, 20, beta=beta)]
+    optimizers = [torch.optim.Adam(out_projs[0].parameters(), lr=lr)]
+    for lay in range(len(SNN.layers)):
+        if cat:
+            hiddenshape = 700 + sum(args.n_hidden[:lay+1])
+        else:
+            hiddenshape = args.n_hidden[lay]
+        out_projs.append(simple_out(hiddenshape, 20, beta=beta))
+        optimizers.append(torch.optim.Adam(out_projs[-1].parameters(), lr=lr))
+        optimizers[-1].zero_grad()
+    SNN.eval()
+    acc = []
+    correct = (len(SNN.layers) + 1)*[0]
+    with torch.no_grad():
+        for epoch in trange(epochs):
+            shuffled = np.arange(len(snn_samples[0]))
+            np.random.shuffle(shuffled)
+            snn_samples = [snn_samples[lay][shuffled] for lay in range(len(snn_samples))]
+            targets = targets[shuffled]
+            for idx in range(0, len(snn_samples[0]), batch):
+                until = min(idx + batch, len(snn_samples[0]))
+                target = targets[idx:until]
+                logit_lists = [None for _ in range(len(SNN.layers)+1)]
+                logit_lists[0] = out_projs[0](snn_samples[0][idx:until].float(), target)[1]
+                for lay in range(len(SNN.layers)):
+                    if cat:
+                        datastep = torch.cat([snn_samples[l][idx:until].float() for l in range(lay+2)], dim=-1).float()
+                    else:
+                        datastep = snn_samples[lay+1][idx:until].float()
+                    logit_lists[lay+1] = out_projs[lay+1](datastep, target)[1]
+                preds = [logit_lists[lay].argmax(axis=-1) for lay in range(len(SNN.layers)+1)]
+                correct = [correct[lay] + (preds[lay] == target).sum() for lay in range(len(SNN.layers)+1)]
+                for out_proj in out_projs:
+                    out_proj.reset()
+
+                losses_out.append(torch.tensor([torch.nn.functional.cross_entropy(logit_lists[lay], target.squeeze().long()) for lay in range(len(SNN.layers)+1)], requires_grad=False))
+
+                for opt in optimizers:
+                    opt.step()
+                    opt.zero_grad()
+            
+            print(f'Cross Entropy Loss: {(torch.stack(losses_out)[-len(snn_samples[0])//batch:].mean(dim=0)).numpy()}\n' +
+                        f'Correct: {100*np.array(correct)/len(snn_samples[0])}%')
+            acc.append(np.array(correct)/print_interval)
+            correct = (len(SNN.layers) + 1)*[0]
+    return out_projs, np.asarray(acc), torch.stack(losses_out)
+
+def get_samples(SNN, dataloader, n_hidden, device):
+    target = dataloader.y
+    samples = dataloader.x
+    snn_samples = [torch.zeros(len(dataloader), n, dtype=torch.uint8) for n in n_hidden]
+    snn_samples.insert(0, samples.sum(dim=1).squeeze())
+    batch = 64
+    for idx in trange(len(samples)//batch):
+        SNN.reset(0)
+        until = min(idx*batch + batch, len(samples))
+        sample = samples[idx*batch:until].squeeze()
+        for step in range(sample.shape[1]):
+            logits, _, _ = SNN(sample[:,step].float().to(device), 0)
+            snn_samples
+            for lay in range(len(SNN.layers)):
+                snn_samples[lay+1][idx*batch:until] += logits[lay].cpu().int().squeeze()
+    return snn_samples, target
+
+def train_out_proj_closed_form(args, snn_samples, targets, cat=False, ridge=False):
+    # Closed form solution
+    from scipy.linalg import lstsq
+    from sklearn.linear_model import Ridge
+    out_projs = [simple_out(700, 20, beta=1.0)]
+    for lay in range(len(args.n_hidden)):
+        if cat:
+            hiddenshape = 700 + sum(args.n_hidden[:lay+1])
+        else:
+            hiddenshape = args.n_hidden[lay]
+        out_projs.append(simple_out(hiddenshape, 20, beta=1.0))
+    # snn_samples = get_samples(SNN, train_loader, args.n_hidden)[0]
+    b = torch.nn.functional.one_hot(targets.to(torch.int64), 20).float().numpy()
+    for i in range(len(snn_samples)):
+        if cat:
+            A = torch.cat([*[snn_samples[lay].float() for lay in range(i+1)]], dim=-1).numpy()
+        else:
+            A = snn_samples[i].float().numpy()
+        if ridge:
+            clf = Ridge(alpha=1, solver='svd')
+            clf.fit(A, b)
+            W = clf.coef_
+        else:
+            W = lstsq(A, b)[0].T
+
+        out_projs[i].out_proj.weight.data = torch.from_numpy(W).float()
+        print(W.shape, W.max(), W.min())
+    return out_projs
