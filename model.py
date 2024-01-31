@@ -38,12 +38,20 @@ class EchoSpike(nn.Module):
             layer_inputs = [num_inputs+num_hidden[-1]]
             for idx_hidden in range(1, len(num_hidden)):
                 layer_inputs.append(num_hidden[idx_hidden-1])
+        elif self.recurrency_type == 'dense':
+            # concatenate input and hidden state
+            layer_inputs = [num_inputs]
+            for idx_hidden in range(1, len(num_hidden)):
+                layer_inputs.append(num_inputs + sum(num_hidden[:idx_hidden]))
         else:
             raise NotImplementedError
 
         self.layers = nn.ModuleList([])
         for idx_hidden in range(len(num_hidden)):
-            self.layers.append(EchoSpike_layer(layer_inputs[idx_hidden], num_hidden[idx_hidden], beta, n_time_steps=n_time_steps, online=online, c_y=c_y, inp_thr=inp_thr))
+            # if beta is list, then layerwise different beta values are used
+            b = beta[idx_hidden] if isinstance(beta, list) else beta
+            
+            self.layers.append(EchoSpike_layer(layer_inputs[idx_hidden], num_hidden[idx_hidden], b, n_time_steps=n_time_steps, online=online, c_y=c_y, inp_thr=inp_thr))
 
         self.hidden_state = None    
 
@@ -59,7 +67,7 @@ class EchoSpike(nn.Module):
             mems = len(self.layers)*[None]
             losses = torch.zeros(len(self.layers), device=inp.device)
             # define input for first layer
-            if self.recurrency_type != 'none':
+            if self.recurrency_type not in ['none', 'dense']:
                 if self.hidden_state is None:
                     # init hidden state
                     if self.recurrency_type == 'dt':
@@ -72,6 +80,7 @@ class EchoSpike(nn.Module):
                     layer_in = torch.cat((inp, *self.hidden_state), dim=1)
                 elif self.recurrency_type == 'dt':
                     layer_in = torch.cat((inp, self.hidden_state), dim=1)
+
             else:
                 layer_in = inp
             out_spk = []
@@ -84,6 +93,8 @@ class EchoSpike(nn.Module):
                         layer_in = torch.cat((inp, spk, *self.hidden_state[idx+1:], *out_spk), dim=1)
                     elif self.recurrency_type == 'stacked':
                         layer_in = torch.cat((spk, self.hidden_state[idx+1]), dim=1)
+                    elif self.recurrency_type == 'dense':
+                        layer_in = torch.cat((inp, *out_spk, spk), dim=1)
                     else:
                         # for dt and none
                         layer_in = spk

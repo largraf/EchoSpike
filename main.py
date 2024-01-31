@@ -11,7 +11,7 @@ class Args:
         self.dataset = 'shd'
         self.online = True
         self.device = 'cpu'
-        self.recurrency_type = 'none'
+        self.recurrency_type = 'dense'
         self.lr = 1e-4
         self.epochs = 100
         self.augment = True
@@ -38,7 +38,7 @@ class Args:
             self.n_inputs = 700
             self.n_outputs = 20
             self.n_time_bins = 100
-            self.beta = -0.95
+            self.beta = [0.94, 0.96, 0.98, 1.0] #-0.95
         else:
             raise NotImplementedError
 
