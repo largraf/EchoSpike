@@ -135,7 +135,6 @@ def get_accuracy(SNN, out_projs, dataloader, device, cat=False):
     correct = torch.zeros(len(out_projs))
     for out_proj in out_projs:
         out_proj.eval()
-    no_spk = True
     total = 0
     SNN.eval()
     pred_matrix = torch.zeros(dataloader.num_classes, dataloader.num_classes)
@@ -150,14 +149,12 @@ def get_accuracy(SNN, out_projs, dataloader, device, cat=False):
             spk_step, _, _ = SNN(data_step, 0)
             spk_step = [data_step, *spk_step]
             for i, out_proj in enumerate(out_projs):
-                if cat:
+                if cat and i > 0:
                     out, mem = out_proj(torch.cat(spk_step[:i+1], axis=-1), target)
                 else:
                     out, mem = out_proj(spk_step[i], target)
-                if no_spk:
+                if step == inp.shape[1]-1:
                     logits[i] = mem
-                else:
-                    logits[i] = logits[i] + out
         for i, logit in enumerate(logits):
             pred = logit.argmax(axis=-1)
             correct[i] += int((pred == target).sum())
@@ -178,20 +175,20 @@ def get_accuracy(SNN, out_projs, dataloader, device, cat=False):
 
     return accs, pred_matrix
 
-def train_out_proj_fast(SNN, args, epochs, batch, snn_samples, targets, cat=False, lr=1e-3):
+def train_out_proj_fast(SNN, args, epochs, batch, snn_samples, targets, cat=False, lr=1e-3, weight_decay=0.0):
     # train output projections from all layers (and no layer)
     losses_out = []
     beta = 1.0
     print_interval = 10*batch
     out_projs = [simple_out(700, 20, beta=beta)]
-    optimizers = [torch.optim.Adam(out_projs[0].parameters(), lr=lr)]
+    optimizers = [torch.optim.AdamW(out_projs[0].parameters(), lr=lr, weight_decay=weight_decay)]
     for lay in range(len(SNN.layers)):
         if cat:
             hiddenshape = 700 + sum(args.n_hidden[:lay+1])
         else:
             hiddenshape = args.n_hidden[lay]
         out_projs.append(simple_out(hiddenshape, 20, beta=beta))
-        optimizers.append(torch.optim.Adam(out_projs[-1].parameters(), lr=lr))
+        optimizers.append(torch.optim.AdamW(out_projs[-1].parameters(), lr=lr, weight_decay=weight_decay))
         optimizers[-1].zero_grad()
     SNN.eval()
     acc = []

@@ -10,7 +10,7 @@ def augment_nmnist(x):
 
 def augment_shd(x):
     x = x.transpose(0, 1)
-    transform = v2.RandomAffine(degrees = 0, translate = (0.05, 0.05))
+    transform = v2.RandomAffine(degrees = 0, translate = (0.02, 0.02))
     return transform(x).transpose(0, 1)
 
 

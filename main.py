@@ -13,10 +13,10 @@ class Args:
         self.device = 'cpu'
         self.recurrency_type = 'dense'
         self.lr = 1e-4
-        self.epochs = 100
+        self.epochs = 1000
         self.augment = True
         self.batch_size = 128 # 64 saccade and 64 predictive before weight update -> 128
-        self.n_hidden = 3*[200]
+        self.n_hidden = 4*[450]
         if self.dataset == 'nmnist':
             self.c_y = [1e-4, -1e-4] if not self.online else [2, -1]
             self.inp_thr = 0.02
@@ -38,7 +38,7 @@ class Args:
             self.n_inputs = 700
             self.n_outputs = 20
             self.n_time_bins = 100
-            self.beta = [0.94, 0.96, 0.98, 1.0] #-0.95
+            self.beta = [0.94,0.96,0.98,1.0]#-0.95
         else:
             raise NotImplementedError
 

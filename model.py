@@ -231,6 +231,7 @@ class EchoSpike_layer(nn.Module):
         cur = self.fc(inp)
         spk, self.mem = self.lif(cur, self.mem)
         self.spk_trace = self._update_trace(self.spk_trace, spk, decay=False)
+        loss = torch.tensor(0.)
 
         if self.training and bf != 0:
             self.inp_trace = self._update_trace(self.inp_trace, inp)
@@ -263,8 +264,6 @@ class EchoSpike_layer(nn.Module):
 
         elif bf != 0 and self.prev_spk_trace is not None:
             loss = self.loss(bf, spk)
-        else:
-            loss = torch.tensor(0.)
         return spk, self.mem, loss.mean()
 
 
