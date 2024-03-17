@@ -228,6 +228,7 @@ def train_out_proj_fast(SNN, args, epochs, batch, snn_samples, targets, cat=Fals
     return out_projs, np.asarray(acc), torch.stack(losses_out)
 
 def get_samples(SNN, dataloader, n_hidden, device):
+    SNN.eval()
     target = dataloader.y
     samples = dataloader.x
     snn_samples = [torch.zeros(len(dataloader), n, dtype=torch.uint8) for n in n_hidden]

@@ -10,7 +10,7 @@ def augment_nmnist(x):
 
 def augment_shd(x):
     x = x.transpose(0, 1)
-    transform = v2.RandomAffine(degrees = 0, translate = (0.02, 0.02))
+    transform = v2.RandomAffine(degrees = 0, translate = (0.05, 0.05))
     return transform(x).transpose(0, 1)
 
 
@@ -113,9 +113,8 @@ def load_classwise_NMNIST(n_time_steps, split_train=False, batch_size=1):
     testset = tonic.datasets.NMNIST(save_to='./data',
                                     transform=frame_transform, train=False, first_saccade_only=True)
     trainset_cached = DiskCachedDataset(trainset, cache_path="./data")
-    testset_cached = DiskCachedDataset(testset, cache_path="./data")
 
-    test_loader = classwise_loader(testset_cached, testset.targets, 10, batch_size)
+    test_loader = classwise_loader(testset, testset.targets, 10, batch_size)
 
     if split_train == True:
         # Optionally split the train set in a two split
