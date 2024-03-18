@@ -4,7 +4,7 @@ import numpy as np
 from tqdm.notebook import trange
 from model import simple_out
 
-def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], online=False, lr=1e-5, augment=False):
+def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], lr=1e-5, augment=False):
     """
     Trains a SNN.
 
@@ -23,45 +23,46 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
     torch.set_grad_enabled(False)
     loss_hist = []
     accuracies = []
-    print_interval = 100*batch_size if 'mnist' in model_name else 40*batch_size
+    spk_rate = []
+    print_interval = 100*batch_size if 'mnist' in model_name else 20*batch_size
     # training loop
     optimizer = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': lr} for par in net.layers])
     optimizer.zero_grad()
     net.train()
-    bf = 0
     target = [torch.randint(trainloader.num_classes, (1,)).item() for _ in range(batch_size)]
-    spks = torch.zeros(len(net.layers)+1, device=device)
 
     while True:
         # Train loop
-        data, target = trainloader.next_item(target, contrastive=(bf==-1))
+        spks = torch.zeros(len(net.layers), device=device)
+        data, target = trainloader.next_item(target, contrastive=True)
         data = data.float().to(device)
         if augment:
             data = augment_shd(data)
         target = target.to(device)
-        sample_loss = torch.zeros(len(net.layers), device=device)
+        sample_loss = torch.zeros((len(net.layers), 2), device=device)
 
         for step in range(data.shape[0]):
             # iterate over time steps
-            if online:
-                inp_activity = data[step].mean(axis=-1)
-            else:
-                inp_activity = None
-            spk, _, loss = net(data[step], torch.tensor(bf, device=device), freeze, inp_activity=inp_activity)
-            spks += torch.stack([data[step].mean(), *[sp.mean() for sp in spk]])    # to analyze nr of spks
+            inp_activity = data[step].mean(axis=-1)
+            spk, _, loss = net(data[step], freeze, inp_activity=inp_activity)
+            spks += torch.stack(spk).mean((1,2)) / data.shape[0]    # to analyze nr of spks
             sample_loss += loss
-            if online:
-                optimizer.step()
-                optimizer.zero_grad()
-
-        loss_hist.append(sample_loss/data.shape[0]) 
-        accuracies.append(net.reset(bf))
-
-        if bf == -1 and not online:
-            # update weigths after one predictive and one contrastive batch, before weight update
             optimizer.step()
             optimizer.zero_grad()
-        bf = 1 if bf != 1 else -1
+
+        loss_hist.append(sample_loss/data.shape[0]) 
+        accuracies.append(net.reset())
+        spk_rate.append(torch.tensor([data.mean(), *spks]))
+        #auto tune hyper parameters
+        target_acc = 0.8
+        target_spk = 0.05
+        for i in range(len(net.layers)):
+            # tune c(y) such that target values are met
+            dSpike = target_spk - spk_rate[-1][i+1]
+            net.layers[i].c_y[0] += 10*dSpike
+            dAcc = target_acc - accuracies[-1][i].mean()
+            net.layers[i].c_y[0] -= 10*dAcc
+            net.layers[i].c_y[1] -= 10*dAcc
 
         step = len(loss_hist) * batch_size
         epoch = step // len(trainloader)
@@ -70,7 +71,8 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
             print(f"Epoch {epoch}, Step {step} \nEchoSpike Loss: {torch.stack(loss_hist[-print_interval//batch_size:]).mean(axis=0)}")
             print(f"Acc: {torch.stack(accuracies).mean(axis=0)}")
             accuracies = []
-            print(f"Spks: {spks*batch_size/print_interval}")
+            print(f"Spks: {torch.stack(spk_rate).mean(axis=0)}")
+            spk_rate = []
             spks = torch.zeros(len(net.layers)+1, device=device)
         if epoch >= epochs:
             break
@@ -142,7 +144,16 @@ def get_accuracy(SNN, out_projs, dataloader, device, cat=False):
         for out_proj in out_projs:
             out_proj.reset()
         SNN.reset(0)
-        inp, target = dataloader.x[idx:idx+batch_size], dataloader.y[idx:idx+batch_size]
+        if dataloader.x is not None:
+            inp, target = dataloader.x[idx:idx+batch_size], dataloader.y[idx:idx+batch_size]
+        else:
+            until = min(batch_size, len(dataloader)-idx)
+            inp = torch.zeros(until, 100, 700)
+            target = torch.zeros(until)
+            for i in range(until):
+                sample, l = dataloader.data[idx+i]
+                inp[i] = torch.tensor(sample).squeeze().float()
+                target[i] = l
         logits = len(out_projs)*[torch.zeros((inp.shape[0],20))]
         for step in range(inp.shape[1]):
             data_step = inp[:,step].float().to(device)
@@ -228,6 +239,9 @@ def train_out_proj_fast(SNN, args, epochs, batch, snn_samples, targets, cat=Fals
     return out_projs, np.asarray(acc), torch.stack(losses_out)
 
 def get_samples(SNN, dataloader, n_hidden, device):
+    SNN.eval()
+    if dataloader.x is None:
+        return get_samples_tonic(SNN, dataloader, n_hidden, device)
     target = dataloader.y
     samples = dataloader.x
     snn_samples = [torch.zeros(len(dataloader), n, dtype=torch.uint8) for n in n_hidden]
@@ -237,6 +251,28 @@ def get_samples(SNN, dataloader, n_hidden, device):
         SNN.reset(0)
         until = min(idx*batch + batch, len(samples))
         sample = samples[idx*batch:until].squeeze()
+        for step in range(sample.shape[1]):
+            logits, _, _ = SNN(sample[:,step].float().to(device), 0)
+            snn_samples
+            for lay in range(len(SNN.layers)):
+                snn_samples[lay+1][idx*batch:until] += logits[lay].cpu().int().squeeze()
+    return snn_samples, target
+
+
+def get_samples_tonic(SNN, dataloader, n_hidden, device):
+    target = dataloader.y
+    snn_samples = [torch.zeros(len(dataloader), n, dtype=torch.uint8) for n in n_hidden]
+    snn_samples.insert(0, torch.zeros(len(dataloader), 700))
+    batch = 64
+    for idx in trange(len(dataloader)//batch):
+        SNN.reset(0)
+        until = min(idx*batch + batch, len(dataloader))
+        sample = torch.zeros(batch, 100, 700) 
+        for i in range(idx*batch,until):
+            s, l = dataloader.data[i] # s.shape 100,1,700
+            s = torch.tensor(s).float().squeeze()
+            snn_samples[0][i] = s.sum(axis=0)
+            sample[i-idx*batch]=s
         for step in range(sample.shape[1]):
             logits, _, _ = SNN(sample[:,step].float().to(device), 0)
             snn_samples

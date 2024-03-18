@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 import snntorch as snn
@@ -84,6 +85,43 @@ def load_SHD(batch_size=1):
     shd_test_y = torch.load('./data/SHD/shd_test_y.torch').squeeze()
     test_loader = classwise_loader(shd_test_x, shd_test_y, 20, batch_size=batch_size)
     return train_loader, test_loader
+
+def load_SHD_tonic(batch_size=1):
+    import tonic
+    from tonic import transforms, DiskCachedDataset
+    # load NMNIST dataset
+    sensor_size = tonic.datasets.SHD.sensor_size
+    print(sensor_size)
+    transf = [transforms.ToFrame(sensor_size=sensor_size,
+                                 n_time_bins=100)]
+    frame_transform = transforms.Compose(transf)
+
+    trainset = tonic.datasets.SHD(save_to='./data',
+                                     transform=frame_transform, train=True)
+    testset = tonic.datasets.SHD(save_to='./data',
+                                    transform=frame_transform, train=False)
+    if not os.path.exists('data/shd_test_labels.pt'):
+        labels = []
+        for _, label in testset:
+            labels.append(label)
+        testset.targets = torch.tensor(labels).float()
+        torch.save(testset.targets, 'data/shd_test_labels.pt')
+        labels = []
+        for _, label in trainset:
+            labels.append(label)
+        trainset.targets = torch.tensor(labels).float()
+        torch.save(trainset.targets, 'data/shd_train_labels.pt')
+    else:
+        trainset.targets = torch.load('data/shd_train_labels.pt')
+        testset.targets = torch.load('data/shd_test_labels.pt')
+    trainset_cached = DiskCachedDataset(trainset, cache_path="./data")
+    #testset_cached =  DiskCachedDataset(testset, cache_path="./data")
+    test_loader = classwise_loader(testset, testset.targets, 20, batch_size)
+
+    train_loader = classwise_loader(trainset_cached, trainset.targets, 20, batch_size)
+    return train_loader, test_loader
+
+
 
 def load_classwise_NMNIST(n_time_steps, split_train=False, batch_size=1):
     """
