@@ -4,7 +4,7 @@ import numpy as np
 from tqdm.notebook import trange
 from model import simple_out
 
-def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], lr=1e-5, augment=False):
+def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[], lr=1e-5, augment=False, enforce_different=False):
     """
     Trains a SNN.
 
@@ -29,16 +29,18 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
     optimizer = torch.optim.SGD([{"params":par.fc.parameters(), 'lr': lr} for par in net.layers])
     optimizer.zero_grad()
     net.train()
-    target = [torch.randint(trainloader.num_classes, (1,)).item() for _ in range(batch_size)]
+    target = torch.tensor([torch.randint(trainloader.num_classes, (1,)).item() for _ in range(batch_size)])
 
     while True:
         # Train loop
         spks = torch.zeros(len(net.layers), device=device)
+        if not enforce_different:
+            # Setting target to -1 randomly selects next target from all labels
+            target = -torch.ones_like(target)
         data, target = trainloader.next_item(target, contrastive=True)
         data = data.float().to(device)
         if augment:
             data = augment_shd(data)
-        target = target.to(device)
         sample_loss = torch.zeros((len(net.layers), 2), device=device)
 
         for step in range(data.shape[0]):
@@ -53,9 +55,9 @@ def train(net, trainloader, epochs, device, model_name, batch_size=1, freeze=[],
         loss_hist.append(sample_loss/data.shape[0]) 
         accuracies.append(net.reset())
         spk_rate.append(torch.tensor([data.mean(), *spks]))
-        #auto tune hyper parameters
-        target_acc = 0.8
-        target_spk = 0.05
+        # auto tune hyper parameters
+        target_acc = 0.85
+        target_spk = 0.08
         for i in range(len(net.layers)):
             # tune c(y) such that target values are met
             dSpike = target_spk - spk_rate[-1][i+1]

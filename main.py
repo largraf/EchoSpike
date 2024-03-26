@@ -15,7 +15,7 @@ class Args:
         self.epochs = 10
         self.augment = False
         self.batch_size = 64 # 64 saccade and 64 predictive before weight update -> 128
-        self.n_hidden = 3*[450]
+        self.n_hidden = 4*[450]
         if self.dataset == 'nmnist':
             self.c_y = [2, -1]
             self.inp_thr = 0.02

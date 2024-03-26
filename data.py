@@ -3,6 +3,8 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 import snntorch as snn
 from torchvision.transforms import v2
+from neurobench.preprocessing.speech2spikes import S2SPreProcessor
+from speech2spikes import S2S
 
 
 def augment_nmnist(x):
@@ -73,6 +75,25 @@ class classwise_loader():
             return torch.stack(imgs).transpose(0, 1), torch.tensor(targets)
         return self.x[indeces,].transpose(0, 1), self.y[indeces,]
 
+def load_librispeach():
+    kwargs = {
+        "sample_rate": 16000,
+        "n_mels": 100,
+        "n_fft": 512,
+        "f_min": 20,
+        "f_max": 4000,
+        "hop_length": 80,
+    }
+    from torchaudio.datasets import LIBRISPEECH
+    libri = LIBRISPEECH('data/libri/', url='test-clean', download=True)
+    pre = S2S()
+    pre.configure(**kwargs)
+    dataloader = DataLoader(libri, batch_size=1, collate_fn=pre)
+    el = dataloader.__iter__().__next__()
+    return dataloader
+
+if __name__ == '__main__':
+    libri = load_librispeach()
 
 def load_SHD(batch_size=1):
     # load SHD dataset
